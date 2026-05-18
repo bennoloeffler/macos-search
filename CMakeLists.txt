@@ -58,6 +58,8 @@ set(MACOS_SEARCH_LIB_SOURCES
     src/Autostart.h
     src/FirstRunDialog.cpp
     src/FirstRunDialog.h
+    src/GlobalHotkey.cpp
+    src/GlobalHotkey.h
     src/PathSelector/PathSelector.cpp
     src/PathSelector/PathSelector.h
     src/PathSelector/PathSelectorState.cpp
@@ -98,6 +100,7 @@ target_link_libraries(macos-search PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Concurrent
+    "-framework Carbon"
 )
 
 set_target_properties(macos-search PROPERTIES
@@ -132,6 +135,8 @@ set(MACOS_SEARCH_TEST_SOURCES
     tests/CacheStrategyTest.h
     tests/AutostartTest.cpp
     tests/AutostartTest.h
+    tests/GlobalHotkeyTest.cpp
+    tests/GlobalHotkeyTest.h
     ${MACOS_SEARCH_LIB_SOURCES}
     assets/icons.qrc
 )
@@ -146,6 +151,7 @@ target_link_libraries(macos-search_tests PRIVATE
     Qt6::Widgets
     Qt6::Concurrent
     Qt6::Test
+    "-framework Carbon"
 )
 
 set_target_properties(macos-search_tests PROPERTIES

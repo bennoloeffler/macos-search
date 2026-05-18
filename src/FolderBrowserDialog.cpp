@@ -496,6 +496,7 @@ void FolderBrowserDialog::setupUi()
     shortcutsHint->setTextFormat(Qt::RichText);
     shortcutsHint->setText(tr(
         "<span style='font-size:11px;'>"
+        "<b>⌃⌥⇧S</b> summon &nbsp;·&nbsp; "
         "<b>↑↓</b> nav &nbsp;·&nbsp; "
         "<b>↵</b> open &nbsp;·&nbsp; "
         "<b>⌘↵</b> reveal &nbsp;·&nbsp; "
@@ -600,6 +601,19 @@ void FolderBrowserDialog::setCurrentRoot(const QString &path)
 {
     navigateTo(path);
     setRootPath(path);
+}
+
+void FolderBrowserDialog::summon()
+{
+    if (isMinimized()) showNormal();
+    show();
+    raise();
+    activateWindow();
+
+    if (auto *searchField = findChild<QLineEdit *>("searchField")) {
+        searchField->setFocus();
+        searchField->selectAll();
+    }
 }
 
 void FolderBrowserDialog::navigateTo(const QString &path)

@@ -2,6 +2,7 @@
 #include "ExcludeSettings.h"
 #include "FirstRunDialog.h"
 #include "FolderBrowserDialog.h"
+#include "GlobalHotkey.h"
 #include "PathCacheManager.h"
 #include "ThemeManager.h"
 
@@ -126,6 +127,18 @@ int main(int argc, char *argv[])
     if (auto *searchField = dialog.findChild<QLineEdit *>("searchField")) {
         searchField->setFocus();
     }
+
+    // Global hotkey ⌃⌥⇧S to summon the dialog from anywhere. Gated on the
+    // "hotkeyEnabled" QSettings key (default ON). See docs/todos.md TODO 6.
+    auto *hotkey = new GlobalHotkey(&app);
+    {
+        QSettings hkSettings("Maude", "FolderBrowser");
+        const bool hotkeyEnabled =
+            hkSettings.value("hotkeyEnabled", true).toBool();
+        if (hotkeyEnabled) hotkey->registerSummonChord();
+    }
+    QObject::connect(hotkey, &GlobalHotkey::summonRequested,
+                     &dialog, &FolderBrowserDialog::summon);
 
     // Pre-scan the user's favorites in priority order. Each `scanComplete`
     // triggers the next path via `expandTo()`. See docs/todos.md TODO 3.

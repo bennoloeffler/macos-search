@@ -47,6 +47,13 @@ public slots:
     /// QMetaObject::invokeMethod works.
     void setCurrentRoot(const QString &path);
 
+    /// Summon the dialog: show + raise + activate, then focus the search
+    /// field and selectAll so the next keystroke replaces the previous
+    /// query. Used by the global ⌃⌥⇧S hotkey (see src/GlobalHotkey.h).
+    /// Idempotent — calling while already focused is a no-op aside from
+    /// the selectAll().
+    void summon();
+
 private slots:
     void onFolderClicked(const QModelIndex &index);
     void onFolderDoubleClicked(const QModelIndex &index);
