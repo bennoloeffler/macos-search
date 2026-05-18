@@ -660,15 +660,13 @@ void FolderBrowserDialog::onFolderDoubleClicked(const QModelIndex &index)
 
 void FolderBrowserDialog::onChooseClicked()
 {
-    // Legacy upstream behavior — closes the dialog. Kept callable so that
-    // keyPressEvent still has a target. Standalone app routes Enter through
-    // onOpenInAppClicked() instead by virtue of m_chooseButton aliasing.
-    QString path = resolvedPath();
-    if (path.isEmpty()) {
-        return;
-    }
-    m_selectedPath = path;
-    accept();
+    // Standalone-app behavior: open the path with the default app and keep
+    // the dialog running. Old upstream `accept()` closed the dialog after
+    // "Choose" — that quits the app in this standalone context because the
+    // dialog IS the main window. Now identical to onOpenInAppClicked so
+    // any legacy caller (keyPress dispatch, button aliasing) does the
+    // right thing.
+    onOpenInAppClicked();
 }
 
 void FolderBrowserDialog::onOpenInFinderClicked()
@@ -797,11 +795,15 @@ void FolderBrowserDialog::onSearchResultClicked(QListWidgetItem *item)
 
 void FolderBrowserDialog::onSearchResultDoubleClicked(QListWidgetItem *item)
 {
+    // Open the search hit with the default app (Finder for folders, the
+    // associated app for files) and **keep the dialog open**. Old behavior
+    // called accept() here, which closed the dialog — but the dialog IS
+    // the running app's main window, so closing it effectively ended the
+    // session. Per docs/todos.md: dialog stays open after every open.
     QString path = item->data(Qt::UserRole).toString();
-    if (!path.isEmpty()) {
-        m_selectedPath = path;
-        accept();
-    }
+    if (path.isEmpty()) return;
+    m_selectedPath = path;
+    QProcess::startDetached("/usr/bin/open", {path});
 }
 
 void FolderBrowserDialog::onExcludeButtonClicked()

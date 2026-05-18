@@ -96,6 +96,12 @@ int main(int argc, char *argv[])
     QApplication::setStyle("macos");
     QApplication::setWindowIcon(QIcon(":/app/macos-search.png"));
 
+    // Belt + braces: keep the app alive even if the main dialog hides
+    // momentarily (e.g. an open-with-default-app call that, on some macOS
+    // builds, briefly steals focus). The dialog is the long-lived window;
+    // exit happens via Cmd-Q.
+    QApplication::setQuitOnLastWindowClosed(false);
+
     ThemeManager::instance()->initialize();
 
     auto *excludeSettings = new ExcludeSettings(&app);

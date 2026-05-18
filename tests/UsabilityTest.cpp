@@ -523,6 +523,72 @@ void UsabilityTest::repeatedEscNeverCloses()  // T-094
     QVERIFY(dialog.isVisible());
 }
 
+void UsabilityTest::doubleClickSearchResultDoesNotCloseDialog()  // T-094b
+{
+    // Regression-lock: double-clicking a search result used to call
+    // accept() which hid the main window — effectively quitting the app
+    // (the dialog IS the main window). It must now open the path with
+    // the default app AND keep the dialog open.
+    FolderBrowserDialog dialog(QDir::homePath());
+    prepare(dialog);
+
+    auto *results = dialog.findChild<QListWidget *>("searchResultsList");
+    QVERIFY(results);
+
+    // Inject a synthetic search result so we don't have to wait for the
+    // scan worker. The double-click handler reads the path from UserRole.
+    auto *item = new QListWidgetItem(QStringLiteral("/tmp"));
+    item->setData(Qt::UserRole, QStringLiteral("/tmp"));
+    results->addItem(item);
+
+    QMetaObject::invokeMethod(&dialog, "onSearchResultDoubleClicked",
+                              Qt::DirectConnection,
+                              Q_ARG(QListWidgetItem *, item));
+
+    QVERIFY2(dialog.isVisible(),
+             "Dialog must remain open after double-clicking a search result.");
+    QCOMPARE(dialog.selectedPath(), QStringLiteral("/tmp"));
+}
+
+void UsabilityTest::enterOnSearchResultDoesNotCloseDialog()  // T-094c
+{
+    // Pressing Enter when the search-results list has focus emits
+    // itemActivated, which is wired to onSearchResultDoubleClicked.
+    // Same regression-lock as T-094b but via the keyboard path.
+    FolderBrowserDialog dialog(QDir::homePath());
+    prepare(dialog);
+
+    auto *results = dialog.findChild<QListWidget *>("searchResultsList");
+    QVERIFY(results);
+    auto *item = new QListWidgetItem(QStringLiteral("/tmp"));
+    item->setData(Qt::UserRole, QStringLiteral("/tmp"));
+    results->addItem(item);
+    results->setCurrentItem(item);
+
+    emit results->itemActivated(item);
+
+    QVERIFY2(dialog.isVisible(),
+             "Dialog must remain open after Enter on a search result.");
+    QCOMPARE(dialog.selectedPath(), QStringLiteral("/tmp"));
+}
+
+void UsabilityTest::chooseSlotDoesNotCloseDialog()  // T-094d
+{
+    // The legacy onChooseClicked() slot used to call accept(). Confirm it
+    // now behaves like onOpenInAppClicked (open + keep dialog visible).
+    FolderBrowserDialog dialog(QDir::homePath());
+    prepare(dialog);
+
+    auto *searchField = dialog.findChild<QLineEdit *>("searchField");
+    QVERIFY(searchField);
+    QVERIFY(dialog.isVisible());
+
+    QMetaObject::invokeMethod(&dialog, "onChooseClicked", Qt::DirectConnection);
+
+    QVERIFY2(dialog.isVisible(),
+             "Dialog must remain open after onChooseClicked.");
+}
+
 // ---------------------------------------------------------------------------
 // H. Visual / discoverability
 // ---------------------------------------------------------------------------

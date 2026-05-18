@@ -58,6 +58,9 @@ private slots:
 
     // G. Suppression
     void repeatedEscNeverCloses();                           // T-094
+    void doubleClickSearchResultDoesNotCloseDialog();        // T-094b
+    void enterOnSearchResultDoesNotCloseDialog();            // T-094c
+    void chooseSlotDoesNotCloseDialog();                     // T-094d
 
     // H. Visual / discoverability
     void upButtonHasTooltip();                               // T-101
