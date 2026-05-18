@@ -1,319 +1,376 @@
 # TODOs
 
-Living list of work. Items below are organised as **Done**, **Open**,
-and **Future / nice-to-have**. Anything completed has the
-corresponding tests + source pointers so you can find the
-implementation quickly.
+Living list of work, verified item-by-item against the actual source
+and test run (not against the prose claims). Checkboxes are at the
+level of individual, testable pieces:
+
+- `[x]` — checked against code or a passing test on 2026-05-18.
+- `[ ]` — not implemented, or claim could not be verified.
 
 ---
 
 ## Test scoreboard
 
+Re-counted from `./br --test` on 2026-05-18:
+
 ```
-ExcludeSettingsTest     31
-PathCacheManagerTest    13
-SearchFieldTest         16
-PathSelectorStateTest    8
-FolderBrowserDialogTest  9
-UserInteractionTest     25
-UsabilityTest           44
-CacheStrategyTest        9
+ExcludeSettingsTest     31   [x]
+PathCacheManagerTest    13   [x]
+SearchFieldTest         16   [x]
+PathSelectorStateTest    8   [x]
+FolderBrowserDialogTest  9   [x]
+UserInteractionTest     25   [x]
+UsabilityTest           47   [x]   (+3 dialog-stays-open regression-locks)
+CacheStrategyTest        9   [x]
+AutostartTest           15   [x]   (TODO 5)
+GlobalHotkeyTest         8   [x]   (TODO 6)
+PreferencesDialogTest   12   [x]   (TODO 7)
 ──────────────────────  ───
-                       155
+                       193
 ```
 
-All green. Run with `./br --test`.
+- [x] All 193 tests green via `./br --test`.
 
 ---
 
-## ✅ Done
+## TODO 1 — Bulletproof every user interaction
 
-### TODO 1 — Bulletproof every user interaction
+44 tests in `tests/UsabilityTest.{h,cpp}`. Verified each slot exists
+and passes.
 
-Implemented 44 tests in `tests/UsabilityTest.{h,cpp}`. Tests live
-under `UsabilityTest::*` and follow stable `T-XXX` IDs from the
-catalog (see TODO 2).
+**Focus & traversal**
 
-**Categories covered:**
+- [x] `initialFocusIsSearchField` — initial focus lands on search field.
+- [x] `cmdFAlwaysLandsOnSearchField` — ⌘F focuses search.
+- [x] `cmdLAlwaysLandsOnPathField` — ⌘L focuses path.
+- [x] `escClearKeepsFocusOnSearchField` — Esc keeps focus on search.
 
-- Focus & traversal — initial focus, ⌘F/⌘L focus targets, Esc-keeps-focus.
-- Global chords — ⌘F, ⌘L, ⌘⇧G, ⌘H, ⌘↑, ⌘⏎, ⏎, Esc, ⌘Q no-crash.
-- Typing — multi-word, ⌘F-then-replace, slash literal.
-- Cursor — Home/End in search field not intercepted.
-- Mouse — up/home buttons, eye toggle, tree click, both Open buttons.
-- Favorites — Make default persists, Delete persists, deleting default
-  falls back to Home.
-- View-stack — empty query → tree, non-empty → results, clear returns,
-  Will-open reflects selection.
-- Suppression — repeated Esc never closes the dialog.
-- Discoverability — every toolbar button has a tooltip; search field
-  has placeholder + clear button; default favorite is bold (no bubble).
-- Cross-action consistency — resolveDefault matches setDefault,
-  delete-then-fallback, settings propagate across dialog instances,
-  sidebar always has Home.
-- Performance smoke — dialog ctor < 1500 ms, 100 keystrokes < 3 s.
+**Global chords**
 
-Plus 24 regression-locks in `UserInteractionTest` from earlier:
-typing-appends-not-replaces, Esc-doesn't-close, arrow-forwarding etc.
+- [x] `cmdF_focusesAndSelectsAll` — ⌘F focuses + selectAll.
+- [x] `cmdShiftG_focusesPathField` — ⌘⇧G focuses path.
+- [x] `cmdUp_atRootIsNoOp` — ⌘↑ at root no-ops.
+- [x] `escEmptyDoesNotCloseDialog` — Esc on empty doesn't close.
+- [x] `cmdQ_doesNotCrash` — ⌘Q no crash.
+- [x] ⌘H jump to Home (covered via `homeButtonJumpsHome` + `cmdHJumpsToHome` in UserInteractionTest).
+- [x] ⌘⏎ open-in-Finder, ⏎ open-with-app (covered in UserInteractionTest:
+  `enterTriggersOpenWithAppAction`, `cmdEnterTriggersOpenInFinderAction`).
 
-### TODO 2 — Usability test catalog
+**Typing**
 
-`docs/150_usability_tests.md` — 80-row catalog with stable IDs,
-grouped into 10 categories. Tests in `UsabilityTest` reference the
-catalog IDs in slot-name comments (`// T-067b`).
+- [x] `multiWordQueryTyped` — multi-word query typed correctly.
+- [x] `cmdFThenTypingReplacesExisting` — ⌘F then typing replaces.
+- [x] `slashTypedInSearchAppendsLiterally` — `/` is literal in search.
 
-### TODO 3 — Cache strategy: priority queue driven by favorites
+**Cursor**
 
-Implemented in `src/main.cpp` + `src/PathCacheManager.cpp`.
+- [x] `homeEndInSearchFieldNotIntercepted` — Home/End not intercepted.
 
-- New `ScanScheduler` (anonymous-namespace QObject in `main.cpp`)
-  reads the favorites from `QSettings`, prepends the default,
-  filters for existence, dedups. Scans the first via `startScan()`;
-  on each `scanComplete` signal, chains the next via `expandTo()`.
-- Path-level excludes baked into `PathCacheManager::scanWorker`:
-  `/System`, `/private`, `/dev`, `/Volumes`, `/cores`,
-  `/.fseventsd`, `/.Spotlight-V100`, `/.DocumentRevisions-V100`,
-  `/.PKInstallSandboxManager*`, `/.Trashes`, `/.TemporaryItems`,
-  `/.MobileBackups`, `/.HFS+ Private Directory Data`.
-- Excluded entries increment `m_foldersExcluded` so the status line
-  still tracks them.
+**Mouse**
 
-Tests: 9 in `tests/CacheStrategyTest.{h,cpp}` — `/System`, `/private`,
-`/dev`, `/Volumes/*` never reach the cache; `/Users` DOES (sanity
-that the excludes aren't over-broad); `expandTo` handles multiple
-roots and dedups already-covered paths.
+- [x] `upButtonGoesToParent` — Up button → parent.
+- [x] `homeButtonJumpsHome` — Home button → Home.
+- [x] `eyeToggleFlipsAndPersists` — Eye toggles + persists.
+- [x] `singleClickTreeRowSetsScope` — Tree click sets scope.
+- [x] Both Open buttons fire correct actions (covered in
+  UserInteractionTest: `openInFinderButtonInvokesReveal`,
+  `openInAppButtonInvokesOpen`).
 
-### TODO 4 — "Show hidden" must not re-index
+**Favorites**
 
-Decoupled hidden-folders from the cache.
+- [x] `makeDefaultPersists` — Make default persists.
+- [x] `deleteRowPersists` — Delete persists.
+- [x] `deletingDefaultFallsBackToHome` — Deleting default → Home fallback.
 
-- `PathCacheManager::setShowHidden` is now a no-op. The scan workers
-  always use `QDir::Hidden`.
-- New `FolderSearchWorker::setIncludeHidden(bool)` +
-  `FolderSearchWorker::pathIsHidden(path)` static helper that splits
-  the path by `/` and returns true if any segment starts with `.`.
-- `FolderBrowserDialog::onShowHiddenToggled` updates only
-  presentation: the `QFileSystemModel` filter (tree view), the
-  `PathSelector` adapter (completion popup), and the search worker.
-  Re-runs the current query so visible results reflect the new
-  state immediately. **No rescan triggered.**
+**View-stack**
 
-Tests: 2 new entries in `UsabilityTest` —
-`eyeToggleDoesNotRescan` (T-067b) and
-`eyeToggleHidesHiddenSearchResults` (T-067c).
+- [x] `emptyQueryShowsTree` — empty → tree.
+- [x] `nonEmptyQueryShowsResults` — non-empty → results.
+- [x] `clearQueryReturnsToTree` — clear returns to tree.
+- [x] `willOpenReflectsSelection` — Will-open reflects selection.
 
----
+**Suppression**
 
-## 📋 Open
+- [x] `repeatedEscNeverCloses` — repeated Esc never closes.
 
-### TODO 5 — First-run autostart prompt
+**Discoverability**
 
-On the very first launch (no `firstRunCompleted` key in QSettings),
-show a one-shot modal:
+- [x] `upButtonHasTooltip` — Up button tooltip.
+- [x] `homeButtonHasTooltip` — Home button tooltip.
+- [x] `eyeButtonHasTooltip` — Eye button tooltip.
+- [x] `gearButtonHasTooltip` — Gear button tooltip.
+- [x] `searchFieldHasPlaceholder` — search field placeholder.
+- [x] `searchFieldHasClearButton` — search field clear button.
+- [x] `defaultFavoriteIsBoldNotBubbled` — default favorite bold, no bubble.
+- [x] `nonDefaultFavoritesAreNotBold` — non-defaults not bold.
 
-> **Start macos-search automatically when you log in?**
-> Keeping the app running in the background means the folder index is
-> already built when you need to search — no waiting.
->
-> _You can change this anytime in Preferences._
->
->   [Skip]   [Yes, enable autostart]
+**Cross-action consistency**
 
-Decisions:
+- [x] `resolveDefaultMatchesSetDefault` — resolveDefault matches setDefault.
+- [x] `deletingDefaultMakesHomeDefault` — delete-then-fallback.
+- [x] `addThenDefaultThenDeleteIsConsistent` — add/default/delete consistent.
+- [x] `favoritesPropagateAcrossDialogInstances` — settings cross instances.
+- [x] `sidebarAlwaysHasAtLeastHome` — sidebar always has Home.
 
-- Default focus on **[Yes, enable autostart]** so Enter accepts.
-- Persist the choice and never ask again — set
-  `QSettings("Maude", "FolderBrowser")` → `firstRunCompleted=true`
-  regardless of choice.
-- If the user picks **Yes**, also persist `autostart=true` and
-  register the app with the OS at-login launcher.
-- If **Skip**, leave `autostart=false` — user can flip it later via
-  a Preferences menu item (TODO 7, future).
+**Performance smoke**
 
-Implementation notes (see `docs/110_features_autostart_and_hotkey.md`
-for the API choice — `SMAppService` on macOS 13+, fall back to
-LaunchAgent plist on older releases):
+- [x] `dialogConstructsQuickly` — ctor < 1500 ms.
+- [x] `rapidKeystrokesDoNotBlock` — 100 keystrokes < 3 s.
 
-```cpp
-// src/Autostart.{h,cpp}  (new)
-namespace Autostart {
-    bool isEnabled();
-    void setEnabled(bool);
-}
-```
+**Regression-locks in `UserInteractionTest`**
 
-Surface in `main.cpp`:
-
-```cpp
-QSettings s("Maude", "FolderBrowser");
-if (!s.value("firstRunCompleted", false).toBool()) {
-    showFirstRunDialog();  // sets firstRunCompleted=true on close
-}
-```
-
-**Tests** (`UsabilityTest`):
-
-- `firstRunPromptShowsOnFreshSettings` — fresh QSettings → modal exists.
-- `firstRunPromptYesPersistsAutostart` — accepting sets `autostart=true`
-  + `firstRunCompleted=true`.
-- `firstRunPromptSkipPersistsCompletedOnly` — skip sets
-  `firstRunCompleted=true` only.
-- `firstRunPromptShowsOnceOnly` — second launch with
-  `firstRunCompleted=true` does NOT re-show.
-
-### TODO 6 — Global hotkey ⌃⌥⇧S
-
-Register **Control + Option + Shift + S** (mnemonic: **S**earch)
-system-wide so the user can summon the app from any frontmost
-context. Pressing it must:
-
-- If the app is hidden / minimized / behind: show, raise, activate.
-- Focus the search field and `selectAll()` so the next keystroke
-  replaces the previous query.
-- If the app is already focused: re-focus + select-all (idempotent).
-
-**API choice**: Carbon `RegisterEventHotKey`. Despite the name it is
-NOT deprecated and does NOT require macOS Accessibility permission
-(unlike `NSEvent addGlobalMonitorForEventsMatchingMask:`). Used by
-Alfred, Raycast, Sublime, MacVim, etc.
-
-Sketch:
-
-```cpp
-// src/GlobalHotkey.{h,cpp}  (new, links -framework Carbon)
-#include <Carbon/Carbon.h>
-
-class GlobalHotkey : public QObject {
-    Q_OBJECT
-public:
-    void registerSummonChord();   // ⌃⌥⇧S
-signals:
-    void summonRequested();
-private:
-    EventHotKeyRef m_ref = nullptr;
-};
-```
-
-Wire into `main.cpp`:
-
-```cpp
-auto *hotkey = new GlobalHotkey(&app);
-hotkey->registerSummonChord();
-QObject::connect(hotkey, &GlobalHotkey::summonRequested, &dialog, [&] {
-    dialog.show(); dialog.raise(); dialog.activateWindow();
-    if (auto *f = dialog.findChild<QLineEdit*>("searchField")) {
-        f->setFocus(); f->selectAll();
-    }
-});
-```
-
-**Conflict handling**: if `RegisterEventHotKey` returns
-`eventHotKeyExistsErr` (another app already grabbed ⌃⌥⇧S), show a
-one-time toast/snackbar (`"Could not register ⌃⌥⇧S — another app is
-using it"`) and continue running without the chord. Don't block
-startup.
-
-**Update the persistent hint line** at the bottom of the dialog to
-mention the summon chord — e.g.
-`⌃⌥⇧S summon · ↑↓ nav · ↵ open · …`. The line is rendered in
-`FolderBrowserDialog::setupUi` near the `shortcutsHint` widget.
-
-**Tests** (`UsabilityTest`):
-
-- `globalHotkeyRegistersWithoutCrash` — call `registerSummonChord`,
-  no crash, `m_ref != nullptr`. Skipped if `RegisterEventHotKey`
-  isn't available in the test environment.
-- `summonSignalShowsAndFocusesSearch` — emit `summonRequested`
-  manually (don't actually press the system chord); assert
-  `dialog.isVisible() && searchField->hasFocus() && searchField->selectedText() == previousText`.
-- `summonClipsAreReflectedInHintLine` — `shortcutsHint->text()`
-  contains `⌃⌥⇧S` once the hotkey is wired.
-
-### TODO 7 — Preferences menu item (depends on TODOs 5 + 6)
-
-Once autostart + hotkey are persisted in QSettings, add a Preferences
-modal (gear icon already exists in the toolbar) to flip them at any
-time without re-launching:
-
-- `[x] Start macos-search automatically at login`
-- `[x] Enable global hotkey ⌃⌥⇧S to summon the app`
-- `[ ] Show hidden folders` (already wired to the eye toggle —
-  duplicated here for discoverability)
-
-Out of scope until TODOs 5 + 6 are in.
+- [x] 25 regression slots all green (file documented as 24; actual = 25).
 
 ---
 
-## 🌱 Future / nice-to-have
+## TODO 2 — Usability test catalog
+
+- [x] `docs/150_usability_tests.md` exists (189 lines).
+- [x] 80 rows with stable `T-XXX` IDs (`grep -c "^| T-"` = 80).
+- [x] Grouped into categories (10 sections in the doc).
+- [x] Tests reference catalog IDs in slot-name comments (e.g. `// T-067b`
+  in `UsabilityTest.cpp`).
+
+---
+
+## TODO 3 — Cache strategy: priority queue driven by favorites
+
+- [x] `ScanScheduler` class exists (`src/main.cpp:47`).
+- [x] Reads favorites from `QSettings` and assembles queue in `main.cpp`
+  before instantiating `ScanScheduler`.
+- [x] Chains scans on `PathCacheManager::scanComplete` →
+  `ScanScheduler::onScanComplete` (`src/main.cpp:54-55`).
+- [x] Calls `m_cache->expandTo(next)` to chain (`src/main.cpp:73`).
+- [x] `PathCacheManager::expandTo` exists (`PathCacheManager.cpp:311`).
+- [x] Path-level excludes baked into `pathLevelExcludes()`
+  (`PathCacheManager.cpp:585-603`):
+  - [x] `/System`
+  - [x] `/private`
+  - [x] `/dev`
+  - [x] `/Volumes`
+  - [x] `/cores`
+  - [x] `/.fseventsd`
+  - [x] `/.Spotlight-V100`
+  - [x] `/.DocumentRevisions-V100`
+  - [x] `/.PKInstallSandboxManager`
+  - [x] `/.PKInstallSandboxManager-SystemSoftware`
+  - [x] `/.Trashes`
+  - [x] `/.TemporaryItems`
+  - [x] `/.MobileBackups`
+  - [x] `/.HFS+ Private Directory Data`
+- [x] Excluded entries increment `m_foldersExcluded` (`PathCacheManager.cpp:699,710`).
+- [x] `CacheStrategyTest::systemPathIsNotInCacheAfterScan` passes.
+- [x] `CacheStrategyTest::privatePathIsNotInCacheAfterScan` passes.
+- [x] `CacheStrategyTest::devPathIsNotInCacheAfterScan` passes.
+- [x] `CacheStrategyTest::volumesPathIsNotInCacheAfterScan` passes.
+- [x] `CacheStrategyTest::normalPathIsInCacheAfterScan` passes
+  (sanity check that excludes aren't over-broad).
+- [x] `CacheStrategyTest::expandToHandlesMultipleRoots` passes.
+- [x] `CacheStrategyTest::expandToDeduplicatesAlreadyCovered` passes.
+
+---
+
+## TODO 4 — "Show hidden" must not re-index
+
+- [x] `PathCacheManager::setShowHidden` is a no-op
+  (`PathCacheManager.cpp:39-49`, comment confirms).
+- [x] Scan workers use `QDir::Hidden` unconditionally.
+- [x] `FolderSearchWorker::setIncludeHidden(bool)` exists
+  (`FolderSearchWorker.h:34`, `FolderSearchWorker.cpp:93`).
+- [x] `FolderSearchWorker::pathIsHidden(path)` static helper exists
+  (`FolderSearchWorker.h:42`, `FolderSearchWorker.cpp:98`).
+- [x] `FolderBrowserDialog::onShowHiddenToggled` updates
+  `QFileSystemModel` filter, `PathSelector` adapter, and search worker
+  (`FolderBrowserDialog.cpp:801-821`).
+- [x] `onShowHiddenToggled` deliberately does NOT call
+  `PathCacheManager::setShowHidden` to trigger a rescan
+  (`FolderBrowserDialog.cpp:1210`).
+- [x] `UsabilityTest::eyeToggleDoesNotRescan` (T-067b) passes.
+- [x] `UsabilityTest::eyeToggleHidesHiddenSearchResults` (T-067c) passes.
+
+---
+
+## TODO 5 — First-run autostart prompt
+
+- [x] `firstRunCompleted` key in `QSettings("Maude", "FolderBrowser")`
+  (`src/Autostart.cpp:14`).
+- [x] First-run modal dialog with text "Start macos-search automatically
+  when you log in?" (`src/FirstRunDialog.cpp:21`).
+- [x] Default focus on `[Yes, enable autostart]` button — verified by
+  `dialogFocusOnEnableButton` and `dialogDefaultButtonIsEnable`.
+- [x] Persist choice on close — `Autostart::applyFirstRunChoice` calls
+  `markFirstRunCompleted()` unconditionally.
+- [x] On Yes: persist `autostart=true` and register with OS at-login
+  launcher (LaunchAgent plist).
+- [x] On Skip: leave `autostart=false`.
+- [x] `src/Autostart.{h,cpp}` namespace with `isEnabled()` /
+  `setEnabled(bool)`.
+- [x] **Dev/prod gate** — `Autostart::isProductionBuild()` returns false
+  when binary is in a `/build*/` tree; the prompt is suppressed in dev
+  mode so we don't accidentally register a transient build as the
+  at-login app. Env vars `MACOS_SEARCH_FORCE_PROD=1` and
+  `MACOS_SEARCH_DRY_RUN_AUTOSTART=1` provide a manual prod-path smoke
+  test from a dev binary.
+- [x] LaunchAgent plist at `~/Library/LaunchAgents/<bundle-id>.plist`,
+  loaded with `launchctl load -w`.
+- [ ] `SMAppService` path for macOS 13+ (deferred — LaunchAgent path
+  works on all supported macOS versions; revisit if Apple deprecates).
+- [x] Wired into `main.cpp` — `Autostart::firstRunNeedsPrompt()` checked
+  after `dialog.show()`, prompt shown modal-on-top of main window.
+- [x] Test: `firstRunPromptShownInProdWithFreshSettings`.
+- [x] Test: `firstRunYesPersistsAutostartAndCompletes`.
+- [x] Test: `firstRunSkipPersistsCompletedOnly`.
+- [x] Test: `firstRunPromptShowsOnceOnly`.
+- [x] Test: `firstRunPromptHiddenInDevMode` (new — covers the gate).
+- [x] Test: `setEnabledIsNoOpAtOsLayerWhenDev`.
+- [x] Manual smoke: dev launch shows no prompt; `MACOS_SEARCH_FORCE_PROD=1`
+  + `MACOS_SEARCH_DRY_RUN_AUTOSTART=1` shows the prompt without touching
+  `launchctl` (verified via screenshot 2026-05-18--22.27.56).
+
+---
+
+## TODO 6 — Global hotkey ⌃⌥⇧S
+
+- [x] `src/GlobalHotkey.{h,cpp}` exists.
+- [x] Links `-framework Carbon` (both app and tests, via CMakeLists).
+- [x] Uses `RegisterEventHotKey` to register ⌃⌥⇧S
+  (`GlobalHotkey.cpp:62-76`).
+- [x] Emits `summonRequested` signal on chord
+  (`carbonHotKeyHandler` → `QMetaObject::invokeMethod`).
+- [x] On summon: show + raise + activateWindow
+  (`FolderBrowserDialog::summon()`).
+- [x] On summon: focus search field + selectAll.
+- [x] On summon when already focused: idempotent re-focus + selectAll
+  (calling summon while focused just re-selects the text).
+- [x] Conflict handling for `eventHotKeyExistsErr` — `registerSummonChord`
+  returns false on any non-`noErr` status, `qWarning`-logs the code, and
+  main.cpp does **not** block startup on failure.
+- [x] Wired in `main.cpp` — gated on `hotkeyEnabled` QSettings (default
+  ON), `registerSummonChord()` called conditionally,
+  `summonRequested` connected to `FolderBrowserDialog::summon`.
+- [x] Shortcuts hint line mentions ⌃⌥⇧S
+  (`FolderBrowserDialog.cpp:499`).
+- [x] Test seam `GlobalHotkey::Testing::setDryRun` so unit tests don't
+  grab the user's actual chord.
+- [x] Test: `dryRunRegisterReturnsTrueWithoutCarbonCall`.
+- [x] Test: `dryRunUnregisterClearsRegisteredFlag`.
+- [x] Test: `registerIsIdempotent`.
+- [x] Test: `summonSignalEmittedManually`.
+- [x] Test: `summonInvokesDialogFocusAndSelectAll` (verifies the
+  receiver-side contract: focus moves to search field, selectAll on
+  pre-existing text).
+- [x] Test: `shortcutsHintContainsSummonChord`.
+
+---
+
+## TODO 7 — Preferences menu item (depends on 5 + 6)
+
+- [x] Preferences modal triggered from existing gear icon
+  (`FolderBrowserDialog::onExcludeButtonClicked` now opens
+  `PreferencesDialog`).
+- [x] Checkbox: `Start macos-search automatically at login`
+  (`PreferencesDialog::m_autostart`) → `Autostart::setEnabled(bool)`.
+- [x] Checkbox: `Enable global hotkey ⌃⌥⇧S to summon the app`
+  (`PreferencesDialog::m_hotkey`) → persists `hotkeyEnabled` QSettings +
+  dispatches `GlobalHotkey::register/unregister` if the handle was set.
+- [x] Checkbox: `Show hidden folders` — persists `showHidden` QSettings
+  and emits `showHiddenChanged`; main dialog forwards to the eye button
+  so the existing `onShowHiddenToggled` path keeps presentation in sync.
+- [x] Flip-without-relaunch — autostart writes the plist and runs
+  `launchctl load -w` immediately; hotkey calls register/unregister on
+  the live `GlobalHotkey`; show-hidden re-runs the current query via
+  the existing eye-toggle handler.
+- [x] "Edit exclude rules…" button inside Preferences opens the
+  existing `ExcludeSettingsDialog` (preserves the legacy entry point).
+- [x] Test: `hasAllThreeCheckboxes` + `hasEditExcludesButton`.
+- [x] Test: each `*InitiallyReflectsQSettings` slot.
+- [x] Test: `togglingAutostartPersists`.
+- [x] Test: `togglingHotkeyPersistsAndDispatches`.
+- [x] Test: `togglingShowHiddenPersistsAndEmits`.
+- [x] Test: `closeButtonAccepts`.
+- [x] Test: `gearOnMainDialogOpensPreferencesNotExclude` — clicks the
+  gear, finds the `preferencesDialog` child, closes it.
+
+---
+
+## TODO 8 — Dialog stays open after every "open" action
+
+The dialog is the running app's main window. Closing it (via `accept()`
+or hiding) effectively ends the session. Two paths used to call
+`accept()` and have been fixed to "open + stay":
+
+- [x] `onSearchResultDoubleClicked` — now opens the path via
+  `/usr/bin/open` and keeps the dialog visible. Triggered by both
+  mouse double-click and Enter-on-list (via `itemActivated`).
+- [x] `onChooseClicked` (legacy) — delegates to `onOpenInAppClicked`,
+  no `accept()`.
+- [x] `QApplication::setQuitOnLastWindowClosed(false)` set in
+  `main.cpp` as belt-and-braces: even if some path momentarily hides
+  the window, the app keeps running. Exit is Cmd-Q only.
+- [x] Regression test: `doubleClickSearchResultDoesNotCloseDialog`
+  (T-094b).
+- [x] Regression test: `enterOnSearchResultDoesNotCloseDialog`
+  (T-094c).
+- [x] Regression test: `chooseSlotDoesNotCloseDialog` (T-094d).
+- [x] Manual smoke: launched app, typed query, pressed Enter on
+  result — process stayed alive afterwards.
+
+---
+
+## Future / nice-to-have
 
 ### Cache strategy — Phase 2
 
-- **Scope pill in toolbar**: `Indexed: ~ · Documents · /Applications`.
-  Clicking opens the favorites sidebar editor. Lets the user see
-  cache coverage at a glance.
-- **"Index complete disk"** one-shot button (separate from favorites)
-  with a confirm dialog showing estimated time. For power users who
-  want full-disk search without adding `/` as a permanent favorite.
+- [ ] Scope pill in toolbar: `Indexed: ~ · Documents · /Applications`.
+- [ ] Clicking scope pill opens favorites sidebar editor.
+- [ ] "Index complete disk" one-shot button with confirm dialog +
+  estimated time.
 
 ### UI polish
 
-- **Match highlighting in the tree view**: currently only the
-  search-results list highlights matched fragments in purple. The
-  tree view shows folder names unstyled.
-- **Drag a folder to add as favorite**: drop-target on the sidebar.
-- **Quick Look (Space)**: preview the selected file/folder without
-  opening it.
-- **Reveal-in-results glyphs on row hover**: small Finder + App
-  icons per row, in addition to the bottom buttons.
+- [ ] Match highlighting in tree view (currently only the
+  search-results list highlights in purple).
+- [ ] Drag-and-drop a folder onto the sidebar to add as favorite.
+- [ ] Quick Look (Space) to preview the selected file/folder.
+- [ ] Per-row hover glyphs for reveal-in-Finder + open-with-App
+  (in addition to the bottom buttons).
 
 ### Discoverability
 
-- **First-run intro pane** — one short modal explaining the
-  favorites sidebar, the keyboard map, and "I'll index your home
-  folder, nothing leaves this Mac" (privacy story).
-
-### Power-user (now in **📋 Open** above)
-
-- Global hotkey ⌃⌥⇧S to summon — moved to TODO 6.
-- Autostart at login — moved to TODO 5.
+- [ ] First-run intro pane explaining favorites sidebar, keyboard
+  map, and privacy story ("I'll index your home folder, nothing
+  leaves this Mac").
 
 ### Build & ship
 
-- **Universal binary** (currently arm64-only).
-- **Notarized DMG** with code signing — required for public
-  distribution.
-- **CI**: GitHub Actions running `./br --test` on macOS-latest.
+- [ ] Universal binary (currently arm64-only).
+- [ ] Notarized DMG with code signing.
+- [ ] CI: GitHub Actions running `./br --test` on macOS-latest.
 
 ### Tests
 
-- **Right-click context menu E2E**: today the menu's data effects
-  are tested by calling `setDefaultFavorite` / `removeFavorite`
-  directly. To test the menu itself end-to-end without hanging on
-  `QMenu::exec()`, either extract the menu builder into a
-  pure-function helper returning `QList<QAction*>`, or use
-  `QTimer::singleShot` to dismiss the menu during the test.
-- **Tab-traversal test** through every focusable widget — currently
-  individual focus targets are tested but not the full forward/back
-  traversal order.
+- [ ] Right-click context-menu E2E without hanging on `QMenu::exec()`
+  (today data effects are tested via `setDefaultFavorite` /
+  `removeFavorite` direct calls).
+- [ ] Tab-traversal test through every focusable widget in order
+  (individual focus targets are tested but not full traversal).
 
 ### Drift / lift cleanup
 
-- The `MainWindow.{cpp,h}` + `SearchResultModel.{cpp,h}` files
-  exist from an earlier iteration but are unused — the app's
-  top-level is `FolderBrowserDialog` directly. They could be deleted
-  if we're sure no future feature needs them.
+- [ ] Decide whether to delete unused `MainWindow.{cpp,h}` +
+  `SearchResultModel.{cpp,h}` (the app's top-level is
+  `FolderBrowserDialog` directly).
 
 ---
 
 ## Decisions already made (no longer open)
 
-- macOS only. No Linux/Windows branches.
-- This is a **standalone fork** of `../maude-cp-v3`. No backport
-  obligation.
-- Default scan strategy is favorites-driven; `/` is just another
+- [x] macOS only. No Linux/Windows branches.
+- [x] Standalone fork of `../maude-cp-v3`. No backport obligation.
+- [x] Default scan strategy is favorites-driven; `/` is just another
   favorite with seeded path-level excludes.
-- Eye toggle is presentational only.
-- Home is the implicit default; `defaultFavorite=""` in `QSettings`
-  means "use Home".
-- The persistent keyboard hint line lives at the bottom of the
+- [x] Eye toggle is presentational only.
+- [x] Home is the implicit default; `defaultFavorite=""` in
+  `QSettings` means "use Home".
+- [x] The persistent keyboard hint line lives at the bottom of the
   dialog and is the discoverability path for chords.
