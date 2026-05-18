@@ -1,10 +1,13 @@
+#include "Autostart.h"
 #include "ExcludeSettings.h"
+#include "FirstRunDialog.h"
 #include "FolderBrowserDialog.h"
 #include "PathCacheManager.h"
 #include "ThemeManager.h"
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QDir>
 #include <QIcon>
 #include <QLineEdit>
@@ -108,6 +111,17 @@ int main(int argc, char *argv[])
     dialog.setWindowTitle(QObject::tr("Open Project / Folder"));
     dialog.setWindowFlag(Qt::Window, true);
     dialog.show();
+
+    // First-run autostart prompt. Only fires in production builds (i.e. when
+    // running from /Applications or ~/Applications). Dev runs from a build*
+    // directory never prompt, so we don't accidentally register a transient
+    // dev binary as the user's at-login app. See src/Autostart.cpp and
+    // docs/todos.md TODO 5.
+    if (Autostart::firstRunNeedsPrompt()) {
+        FirstRunDialog firstRun(&dialog);
+        firstRun.exec();
+        Autostart::applyFirstRunChoice(firstRun.result() == QDialog::Accepted);
+    }
 
     if (auto *searchField = dialog.findChild<QLineEdit *>("searchField")) {
         searchField->setFocus();

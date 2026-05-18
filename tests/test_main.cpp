@@ -21,6 +21,7 @@
 #include "UserInteractionTest.h"
 #include "UsabilityTest.h"
 #include "CacheStrategyTest.h"
+#include "AutostartTest.h"
 
 #define RUN_TEST(TestClass, varName) \
     if (testFilter.isEmpty() || QString(#TestClass) == testFilter) \
@@ -66,6 +67,7 @@ int main(int argc, char *argv[])
     RUN_TEST(UserInteractionTest, t6);
     RUN_TEST(UsabilityTest, t7);
     RUN_TEST(CacheStrategyTest, t8);
+    RUN_TEST(AutostartTest, t9);
 
     return status;
 }

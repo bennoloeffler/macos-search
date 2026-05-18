@@ -54,6 +54,10 @@ set(MACOS_SEARCH_LIB_SOURCES
     src/IconRegistry.h
     src/FolderBrowserDialog.cpp
     src/FolderBrowserDialog.h
+    src/Autostart.cpp
+    src/Autostart.h
+    src/FirstRunDialog.cpp
+    src/FirstRunDialog.h
     src/PathSelector/PathSelector.cpp
     src/PathSelector/PathSelector.h
     src/PathSelector/PathSelectorState.cpp
@@ -126,6 +130,8 @@ set(MACOS_SEARCH_TEST_SOURCES
     tests/UsabilityTest.h
     tests/CacheStrategyTest.cpp
     tests/CacheStrategyTest.h
+    tests/AutostartTest.cpp
+    tests/AutostartTest.h
     ${MACOS_SEARCH_LIB_SOURCES}
     assets/icons.qrc
 )
