@@ -1,0 +1,15 @@
+build/
+build-benno/
+build-*/
+
+# clangd / editor
+compile_commands.json
+.cache/
+.clangd/
+
+# macOS
+.DS_Store
+
+# Local editor scratch
+*.claude-backup
+*.swp

@@ -1,0 +1,15 @@
+<RCC>
+    <qresource prefix="/icons/icons">
+        <file alias="icon-home.svg">icons/icons/icon-home.svg</file>
+        <file alias="icon-chevron-up.svg">icons/icons/icon-chevron-up.svg</file>
+        <file alias="icon-gear.svg">icons/icons/icon-gear.svg</file>
+        <file alias="icon-folder.svg">icons/icons/icon-folder.svg</file>
+        <file alias="icon-folder-open.svg">icons/icons/icon-folder-open.svg</file>
+    </qresource>
+    <qresource prefix="/icons/mcp">
+        <file alias="eye.svg">icons/mcp/eye.svg</file>
+    </qresource>
+    <qresource prefix="/app">
+        <file alias="macos-search.png">macos-search.png</file>
+    </qresource>
+</RCC>
