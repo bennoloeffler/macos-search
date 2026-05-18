@@ -23,6 +23,7 @@
 #include "CacheStrategyTest.h"
 #include "AutostartTest.h"
 #include "GlobalHotkeyTest.h"
+#include "PreferencesDialogTest.h"
 
 #define RUN_TEST(TestClass, varName) \
     if (testFilter.isEmpty() || QString(#TestClass) == testFilter) \
@@ -70,6 +71,7 @@ int main(int argc, char *argv[])
     RUN_TEST(CacheStrategyTest, t8);
     RUN_TEST(AutostartTest, t9);
     RUN_TEST(GlobalHotkeyTest, t10);
+    RUN_TEST(PreferencesDialogTest, t11);
 
     return status;
 }

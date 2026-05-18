@@ -17,6 +17,7 @@ class QStackedWidget;
 class FolderSearchWorker;
 class ExcludeSettings;
 class PathSelector;
+class GlobalHotkey;
 
 class FolderBrowserDialog : public QDialog
 {
@@ -53,6 +54,16 @@ public slots:
     /// Idempotent — calling while already focused is a no-op aside from
     /// the selectAll().
     void summon();
+
+    /// Hand the GlobalHotkey instance to the dialog so the Preferences
+    /// dialog (TODO 7) can flip the chord live. Set from main.cpp after
+    /// constructing both. nullptr means "no live hotkey wiring".
+    void setGlobalHotkey(GlobalHotkey *hotkey);
+
+signals:
+    /// Emitted when the Preferences dialog toggles the hotkey checkbox.
+    /// main.cpp listens and forwards to GlobalHotkey::register/unregister.
+    void hotkeyPreferenceChanged(bool enabled);
 
 private slots:
     void onFolderClicked(const QModelIndex &index);
@@ -146,6 +157,10 @@ private:
 
     QString m_currentPath;
     QString m_selectedPath;
+
+    // Optional handle to the global hotkey, set from main.cpp. Used by
+    // the Preferences dialog (TODO 7) to flip the chord live.
+    GlobalHotkey *m_globalHotkey = nullptr;
 
     // Reentrancy guard for keyPressEvent's arrow-key forwarding. Qt
     // propagates unaccepted KeyPress events up the parent chain, so a

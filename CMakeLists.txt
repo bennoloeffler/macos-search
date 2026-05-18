@@ -60,6 +60,8 @@ set(MACOS_SEARCH_LIB_SOURCES
     src/FirstRunDialog.h
     src/GlobalHotkey.cpp
     src/GlobalHotkey.h
+    src/PreferencesDialog.cpp
+    src/PreferencesDialog.h
     src/PathSelector/PathSelector.cpp
     src/PathSelector/PathSelector.h
     src/PathSelector/PathSelectorState.cpp
@@ -137,6 +139,8 @@ set(MACOS_SEARCH_TEST_SOURCES
     tests/AutostartTest.h
     tests/GlobalHotkeyTest.cpp
     tests/GlobalHotkeyTest.h
+    tests/PreferencesDialogTest.cpp
+    tests/PreferencesDialogTest.h
     ${MACOS_SEARCH_LIB_SOURCES}
     assets/icons.qrc
 )

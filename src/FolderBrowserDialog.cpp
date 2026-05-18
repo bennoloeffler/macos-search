@@ -1,6 +1,7 @@
 #include "FolderBrowserDialog.h"
 #include "ExcludeSettings.h"
 #include "ExcludeSettingsDialog.h"
+#include "PreferencesDialog.h"
 #include "FolderSearchWorker.h"
 #include "IconRegistry.h"
 #include "PathCacheManager.h"
@@ -805,11 +806,30 @@ void FolderBrowserDialog::onSearchResultDoubleClicked(QListWidgetItem *item)
 
 void FolderBrowserDialog::onExcludeButtonClicked()
 {
-    ExcludeSettingsDialog dialog(m_excludeSettings, this);
-    dialog.exec();
+    // The gear icon now opens the broader Preferences dialog. Exclude
+    // rules are reachable from there via an "Edit exclude rules…" button.
+    // See docs/todos.md TODO 7.
+    PreferencesDialog dlg(m_excludeSettings, m_globalHotkey, this);
 
-    // After changing excludes, trigger a rescan
+    connect(&dlg, &PreferencesDialog::showHiddenChanged, this,
+            [this](bool checked) {
+                if (m_showHiddenButton &&
+                    m_showHiddenButton->isChecked() != checked) {
+                    m_showHiddenButton->setChecked(checked);
+                }
+            });
+    connect(&dlg, &PreferencesDialog::hotkeyEnabledChanged,
+            this, &FolderBrowserDialog::hotkeyPreferenceChanged);
+
+    dlg.exec();
+
+    // After changing excludes (via the sub-dialog), trigger a rescan.
     PathCacheManager::instance()->rescan();
+}
+
+void FolderBrowserDialog::setGlobalHotkey(GlobalHotkey *hotkey)
+{
+    m_globalHotkey = hotkey;
 }
 
 void FolderBrowserDialog::onShowHiddenToggled(bool checked)

@@ -140,6 +140,14 @@ int main(int argc, char *argv[])
     QObject::connect(hotkey, &GlobalHotkey::summonRequested,
                      &dialog, &FolderBrowserDialog::summon);
 
+    // Let the Preferences dialog (TODO 7) flip the hotkey live.
+    dialog.setGlobalHotkey(hotkey);
+    QObject::connect(&dialog, &FolderBrowserDialog::hotkeyPreferenceChanged,
+                     hotkey, [hotkey](bool enabled) {
+                         if (enabled) hotkey->registerSummonChord();
+                         else hotkey->unregisterSummonChord();
+                     });
+
     // Pre-scan the user's favorites in priority order. Each `scanComplete`
     // triggers the next path via `expandTo()`. See docs/todos.md TODO 3.
     auto *scheduler = new ScanScheduler(PathCacheManager::instance(),
