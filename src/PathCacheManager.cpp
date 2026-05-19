@@ -22,10 +22,59 @@ PathCacheManager* PathCacheManager::instance()
 PathCacheManager::PathCacheManager(QObject *parent)
     : QObject(parent)
 {
+    m_softCap.storeRelease(kDefaultSoftCap);
+    m_hardCeiling.storeRelease(kDefaultHardCeiling);
+
     // Create filesystem watcher on main thread
     m_watcher = new QFileSystemWatcher(this);
     connect(m_watcher, &QFileSystemWatcher::directoryChanged,
             this, &PathCacheManager::onDirectoryChanged);
+}
+
+void PathCacheManager::setSoftCap(int newCap)
+{
+    if (newCap < 1) newCap = 1;
+    const int hard = m_hardCeiling.loadAcquire();
+    if (newCap > hard) newCap = hard;
+    m_softCap.storeRelease(newCap);
+    QMutexLocker locker(&m_mutex);
+    if (m_paths.size() >= newCap) {
+        m_capReached.storeRelease(1);
+    } else {
+        m_capReached.storeRelease(0);
+    }
+}
+
+void PathCacheManager::setHardCeiling(int newCeiling)
+{
+    if (newCeiling < 1) newCeiling = 1;
+    m_hardCeiling.storeRelease(newCeiling);
+    if (m_softCap.loadAcquire() > newCeiling) {
+        m_softCap.storeRelease(newCeiling);
+    }
+    QMutexLocker locker(&m_mutex);
+    if (m_paths.size() >= newCeiling) {
+        m_ceilingReached.storeRelease(1);
+    } else {
+        m_ceilingReached.storeRelease(0);
+    }
+}
+
+void PathCacheManager::expandToUser(const QString &rootPath)
+{
+    // Bump folder + file soft caps by one increment before delegating to
+    // the regular expandTo() flow. The user clicked "Scan this folder now"
+    // — that's a deliberate "use more memory if needed" signal.
+    const int oldSoft = m_softCap.loadAcquire();
+    const int hard = m_hardCeiling.loadAcquire();
+    const int newSoft = qMin(oldSoft + kSoftCapIncrement, hard);
+    if (newSoft > oldSoft) {
+        m_softCap.storeRelease(newSoft);
+        m_capReached.storeRelease(0);
+        emit folderCapRaised(newSoft);
+    }
+    FileCacheManager::instance()->bumpSoftCap();
+    expandTo(rootPath);
 }
 
 PathCacheManager::~PathCacheManager()
@@ -94,6 +143,8 @@ void PathCacheManager::rescan()
         m_pathSet.clear();
         m_completedRoots.clear();
     }
+    m_capReached.storeRelease(0);
+    m_ceilingReached.storeRelease(0);
     // The file cache is rebuilt by the same scan walks; clear it in lockstep.
     FileCacheManager::instance()->clear();
     // Clear watcher
@@ -447,12 +498,21 @@ void PathCacheManager::expandTo(const QString &rootPath)
 
 void PathCacheManager::addPathToCache(const QString &path)
 {
+    if (m_ceilingReached.loadAcquire()) return;
     QMutexLocker locker(&m_mutex);
-    if (!m_pathSet.contains(path)) {
-        m_paths.append(path);
-        m_lowerPaths.append(path.toLower());
-        m_pathSet.insert(path);
+    if (m_pathSet.contains(path)) return;
+    const int hard = m_hardCeiling.loadAcquire();
+    if (m_paths.size() >= hard) {
+        m_ceilingReached.storeRelease(1);
+        return;
     }
+    if (m_paths.size() >= m_softCap.loadAcquire()) {
+        if (!m_capReached.loadAcquire()) m_capReached.storeRelease(1);
+        return;
+    }
+    m_paths.append(path);
+    m_lowerPaths.append(path.toLower());
+    m_pathSet.insert(path);
 }
 
 void PathCacheManager::removePathFromCache(const QString &path)
@@ -633,11 +693,24 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
 static const QStringList &pathLevelExcludes()
 {
     static const QStringList kExcludes = {
+        // OS-managed roots — millions of files nobody browses interactively.
         QStringLiteral("/System"),
         QStringLiteral("/private"),
         QStringLiteral("/dev"),
-        QStringLiteral("/Volumes"),     // mounted drives are huge and out of scope
+        QStringLiteral("/Volumes"),     // external drives — separately mounted
         QStringLiteral("/cores"),
+
+        // BSD layout — package managers and system binaries.
+        QStringLiteral("/usr"),         // /usr/share alone is millions of tiny files
+        QStringLiteral("/Library"),     // system-wide app support
+        QStringLiteral("/Applications"),// .app bundles already skipped, but this
+                                        // also skips the directory itself
+        QStringLiteral("/opt"),         // Homebrew, MacPorts
+        QStringLiteral("/bin"),
+        QStringLiteral("/sbin"),
+        QStringLiteral("/etc"),
+
+        // System-managed hidden directories at the root.
         QStringLiteral("/.fseventsd"),
         QStringLiteral("/.Spotlight-V100"),
         QStringLiteral("/.DocumentRevisions-V100"),
@@ -805,8 +878,23 @@ void PathCacheManager::scanWorker()
             // further scanning. Regular folders are added to both the cache
             // and the work queue.
             if (isBundle) {
+                if (m_ceilingReached.loadAcquire()) continue;
                 QMutexLocker locker(&m_mutex);
                 if (!m_pathSet.contains(fullPath)) {
+                    const int hard = m_hardCeiling.loadAcquire();
+                    if (m_paths.size() >= hard) {
+                        m_ceilingReached.storeRelease(1);
+                        continue;
+                    }
+                    if (m_paths.size() >= m_softCap.loadAcquire()) {
+                        if (!m_capReached.loadAcquire()) {
+                            m_capReached.storeRelease(1);
+                            QMetaObject::invokeMethod(this,
+                                [this]() { emit folderCapReachedSignal(); },
+                                Qt::QueuedConnection);
+                        }
+                        continue;
+                    }
                     m_paths.append(fullPath);
                     m_lowerPaths.append(fullPath.toLower());
                     m_pathSet.insert(fullPath);
@@ -839,13 +927,41 @@ void PathCacheManager::scanWorker()
         if (!newPaths.isEmpty()) {
             {
                 QMutexLocker locker(&m_mutex);
+                const int hard = m_hardCeiling.loadAcquire();
+                const int soft = m_softCap.loadAcquire();
+                bool emittedCap = false;
+                bool emittedCeiling = false;
                 for (const QString &p : newPaths) {
+                    if (m_paths.size() >= hard) {
+                        if (!m_ceilingReached.loadAcquire()) {
+                            m_ceilingReached.storeRelease(1);
+                            emittedCeiling = true;
+                        }
+                        break;
+                    }
+                    if (m_paths.size() >= soft) {
+                        if (!m_capReached.loadAcquire()) {
+                            m_capReached.storeRelease(1);
+                            emittedCap = true;
+                        }
+                        break;
+                    }
                     if (!m_pathSet.contains(p)) {
                         m_paths.append(p);
                         m_lowerPaths.append(p.toLower());
                         m_pathSet.insert(p);
                         m_foldersIndexed.fetchAndAddRelaxed(1);
                     }
+                }
+                if (emittedCap) {
+                    QMetaObject::invokeMethod(this,
+                        [this]() { emit folderCapReachedSignal(); },
+                        Qt::QueuedConnection);
+                }
+                if (emittedCeiling) {
+                    QMetaObject::invokeMethod(this,
+                        [this]() { emit folderCeilingReachedSignal(); },
+                        Qt::QueuedConnection);
                 }
             }
 

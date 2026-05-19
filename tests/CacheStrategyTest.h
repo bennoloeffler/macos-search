@@ -27,6 +27,18 @@ private slots:
     // Priority-driven scan order (via expandTo)
     void expandToHandlesMultipleRoots();
     void expandToDeduplicatesAlreadyCovered();
+
+    // Expanded path-level excludes (2026-05-19 — runaway-scan regression)
+    void usrPathIsNotInCacheAfterScan();
+    void libraryPathIsNotInCacheAfterScan();
+    void applicationsPathIsNotInCacheAfterScan();
+    void optPathIsNotInCacheAfterScan();
+
+    // Folder cap (2026-05-19)
+    void folderHardCeilingBlocksAdditions();
+    void folderSoftCapEmitsSignalOnce();
+    void expandToUserBumpsFolderSoftCap();
+    void expandToUserBumpsFileSoftCap();
 };
 
 #endif // CACHESTRATEGYTEST_H

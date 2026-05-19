@@ -37,13 +37,21 @@ void FileSearchIntegrationTest::initTestCase()
 {
     // Make sure no previous scan is still alive when this suite starts.
     PathCacheManager::instance()->stopScan();
+    // QTemporaryDir lives in /var/folders/... outside $HOME, but the file
+    // cache scope guard wouldn't let us index it. Tests run with the home
+    // override pointing at "/" so scans of the temp directory work.
+    FileCacheManager::setHomeOverrideForTests("/");
 }
 
 void FileSearchIntegrationTest::cleanup()
 {
     PathCacheManager::instance()->stopScan();
     FileCacheManager::instance()->clear();
-    FileCacheManager::instance()->setCapLimit(500000);
+    FileCacheManager::instance()->setSoftCap(FileCacheManager::kDefaultSoftCap);
+    FileCacheManager::instance()->setHardCeiling(FileCacheManager::kDefaultHardCeiling);
+    // Keep the home override in place for the next test in this class; the
+    // last test triggers the global clear via QTest's cleanupTestCase contract.
+    FileCacheManager::setHomeOverrideForTests("/");
 }
 
 void FileSearchIntegrationTest::testScanPopulatesFileCache()

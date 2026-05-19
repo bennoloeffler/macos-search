@@ -104,6 +104,47 @@ private:
     QStringList m_lowerPaths;
     QSet<QString> m_pathSet; // For O(1) lookup
 
+    // Two-tier cap (mirrors FileCacheManager).
+    //   softCap     — backstop against unbounded background growth (the
+    //                 50 M / 54 GB incident). Background scans stop adding
+    //                 here. A user-initiated "Scan now" can bump it by
+    //                 +150k folders per click, capped at hardCeiling.
+    //   hardCeiling — absolute ceiling, only adjustable via Preferences.
+    QAtomicInt m_capReached{0};
+    QAtomicInt m_ceilingReached{0};
+    QAtomicInt m_softCap;
+    QAtomicInt m_hardCeiling;
+
+public:
+    enum class AddSource {
+        BackgroundScan = 0,
+        UserExpand = 1,
+    };
+
+    static constexpr int kDefaultSoftCap = 1'000'000;
+    static constexpr int kDefaultHardCeiling = 5'000'000;
+    static constexpr int kSoftCapIncrement = 150'000;
+
+    int softCap() const { return m_softCap.loadAcquire(); }
+    int hardCeiling() const { return m_hardCeiling.loadAcquire(); }
+    void setSoftCap(int newCap);
+    void setHardCeiling(int newCeiling);
+    bool folderCapReached() const { return m_capReached.loadAcquire() != 0; }
+    bool folderCeilingReached() const { return m_ceilingReached.loadAcquire() != 0; }
+
+    /// Expand the cache to cover `rootPath` with a user-initiated request.
+    /// Unlike expandTo(), this bumps the soft cap up to `kSoftCapIncrement`
+    /// per call so a deliberate "Scan now" click can grow the index past
+    /// today's soft limit (still bounded by the hard ceiling).
+    void expandToUser(const QString &rootPath);
+
+signals:
+    void folderCapReachedSignal();
+    void folderCeilingReachedSignal();
+    void folderCapRaised(int newSoftCap);
+
+private:
+
     // Filesystem watcher for real-time updates
     QFileSystemWatcher *m_watcher = nullptr;
     bool m_watcherLimitReached = false;

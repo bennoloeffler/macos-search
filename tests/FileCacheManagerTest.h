@@ -27,6 +27,17 @@ private slots:
     void testCapEnforced();
     void testCapReachedSignalEmitted();
     void testSetCapLimitClearsFlagIfRoom();
+
+    // Scope guard + two-tier cap (added 2026-05-19)
+    void testAddFileRejectsPathOutsideHome();
+    void testIsUnderHomeBoundaryRespected();
+    void testIsUnderHomeAllowsExactHome();
+    void testHardCeilingBlocksFurtherAdditions();
+    void testHardCeilingSignalEmitted();
+    void testBumpSoftCapRaisesToIncrement();
+    void testBumpSoftCapClampsAtHardCeiling();
+    void testBumpSoftCapEmitsCapRaisedSignal();
+    void testDefaultCapsMatchConstants();
 };
 
 #endif // FILECACHEMANAGERTEST_H

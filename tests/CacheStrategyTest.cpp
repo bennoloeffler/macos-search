@@ -1,9 +1,11 @@
 #include "CacheStrategyTest.h"
 
 #include "ExcludeSettings.h"
+#include "FileCacheManager.h"
 #include "PathCacheManager.h"
 
 #include <QDir>
+#include <QFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -177,4 +179,144 @@ void CacheStrategyTest::expandToDeduplicatesAlreadyCovered()
         if (p == subPath) ++hits;
     }
     QCOMPARE(hits, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Expanded path-level excludes (the 50M / 54GB regression)
+// ---------------------------------------------------------------------------
+
+void CacheStrategyTest::usrPathIsNotInCacheAfterScan()
+{
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(QStringLiteral("/"));
+    QTest::qWait(800);
+    cache->stopScan();
+    QVERIFY(!anyPathStartsWith(cache->cachedPaths(), QStringLiteral("/usr")));
+}
+
+void CacheStrategyTest::libraryPathIsNotInCacheAfterScan()
+{
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(QStringLiteral("/"));
+    QTest::qWait(800);
+    cache->stopScan();
+    QVERIFY(!anyPathStartsWith(cache->cachedPaths(), QStringLiteral("/Library")));
+}
+
+void CacheStrategyTest::applicationsPathIsNotInCacheAfterScan()
+{
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(QStringLiteral("/"));
+    QTest::qWait(800);
+    cache->stopScan();
+    QVERIFY(!anyPathStartsWith(cache->cachedPaths(), QStringLiteral("/Applications")));
+}
+
+void CacheStrategyTest::optPathIsNotInCacheAfterScan()
+{
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(QStringLiteral("/"));
+    QTest::qWait(800);
+    cache->stopScan();
+    QVERIFY(!anyPathStartsWith(cache->cachedPaths(), QStringLiteral("/opt")));
+}
+
+// ---------------------------------------------------------------------------
+// Folder cap behavior
+// ---------------------------------------------------------------------------
+
+void CacheStrategyTest::folderHardCeilingBlocksAdditions()
+{
+    // Use a synthetic tree under a QTemporaryDir so we hit a small ceiling.
+    QTemporaryDir tdir;
+    QVERIFY(tdir.isValid());
+    for (int i = 0; i < 20; ++i) {
+        QDir(tdir.path()).mkpath(QString("d%1").arg(i));
+    }
+
+    auto *cache = PathCacheManager::instance();
+    // init() called rescan() which restarted a $HOME scan; halt that and
+    // wipe state before setting tiny caps for this test.
+    cache->stopScan();
+    cache->rescan();
+    cache->stopScan();
+    QTest::qWait(30);
+
+    cache->setHardCeiling(5);
+    cache->setSoftCap(5);
+
+    cache->expandTo(tdir.path());
+    QTest::qWait(800);
+    cache->stopScan();
+
+    QVERIFY2(cache->folderCount() <= 5,
+             qPrintable(QString("folderCount=%1, expected <=5")
+                            .arg(cache->folderCount())));
+    QVERIFY(cache->folderCeilingReached());
+
+    cache->setHardCeiling(PathCacheManager::kDefaultHardCeiling);
+    cache->setSoftCap(PathCacheManager::kDefaultSoftCap);
+}
+
+void CacheStrategyTest::folderSoftCapEmitsSignalOnce()
+{
+    QTemporaryDir tdir;
+    QVERIFY(tdir.isValid());
+    for (int i = 0; i < 20; ++i) {
+        QDir(tdir.path()).mkpath(QString("e%1").arg(i));
+    }
+    auto *cache = PathCacheManager::instance();
+    cache->stopScan();
+    cache->rescan();
+    cache->stopScan();
+    QTest::qWait(30);
+
+    cache->setHardCeiling(1000);
+    cache->setSoftCap(3);
+
+    QSignalSpy spy(cache, &PathCacheManager::folderCapReachedSignal);
+    cache->expandTo(tdir.path());
+    QTest::qWait(600);
+    cache->stopScan();
+
+    QVERIFY(spy.count() >= 1);
+
+    cache->setHardCeiling(PathCacheManager::kDefaultHardCeiling);
+    cache->setSoftCap(PathCacheManager::kDefaultSoftCap);
+}
+
+void CacheStrategyTest::expandToUserBumpsFolderSoftCap()
+{
+    auto *cache = PathCacheManager::instance();
+    cache->stopScan();
+    cache->setHardCeiling(10'000'000);
+    cache->setSoftCap(1000);
+
+    QSignalSpy raisedSpy(cache, &PathCacheManager::folderCapRaised);
+    cache->expandToUser(QDir::homePath());
+    cache->stopScan();
+    QVERIFY(raisedSpy.count() >= 1);
+    QCOMPARE(cache->softCap(),
+             1000 + PathCacheManager::kSoftCapIncrement);
+
+    cache->setHardCeiling(PathCacheManager::kDefaultHardCeiling);
+    cache->setSoftCap(PathCacheManager::kDefaultSoftCap);
+}
+
+void CacheStrategyTest::expandToUserBumpsFileSoftCap()
+{
+    auto *fc = FileCacheManager::instance();
+    fc->setHardCeiling(20'000'000);
+    fc->setSoftCap(2000);
+    const int before = fc->softCap();
+
+    auto *cache = PathCacheManager::instance();
+    cache->stopScan();
+    cache->expandToUser(QDir::homePath());
+    cache->stopScan();
+
+    QCOMPARE(fc->softCap(), before + FileCacheManager::kSoftCapIncrement);
+
+    fc->setSoftCap(FileCacheManager::kDefaultSoftCap);
+    fc->setHardCeiling(FileCacheManager::kDefaultHardCeiling);
 }

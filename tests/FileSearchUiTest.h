@@ -25,6 +25,9 @@ private slots:
     void testTreeFilterFilesModeIncludesFiles();
     void testTreeFilterBothModeIncludesFiles();
     void testTreeFilterRespectsShowHidden();
+    void testScanHereButtonExistsAndStartsEnabled();
+    void testScanHereButtonLabelDefault();
+    void testScanHereButtonDisabledWhenPathDoesNotExist();
 };
 
 #endif // FILESEARCHUITEST_H

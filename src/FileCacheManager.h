@@ -11,61 +11,90 @@
 // In-memory file-name cache. Populated by the same BFS walk that drives
 // PathCacheManager (one scan visit per directory, two destinations).
 //
-// Architectural difference from PathCacheManager:
-//   1. No "subfolder-of-existing-match" suppression. Two files in the same
-//      directory are independently relevant.
-//   2. Bounded size: when the cap is hit, additions are silently dropped
-//      and `capReached()` is true. The toolbar surfaces this so the user
-//      can tighten excludes or raise the cap.
+// SCOPE
+// -----
+// **Files are only indexed inside the user's home directory.** Any
+// addFile(path) call for a path outside $HOME is silently rejected. This
+// prevents the runaway growth observed when scanning from "/" — the user
+// almost never wants /usr/share/man pages in their file picker, and
+// indexing them costs gigabytes of RAM. Folder search still works
+// everywhere; this guard only applies to files.
+//
+// CAPS
+// ----
+// Two layered limits, matching the design in docs/search_files-too.md:
+//   - softCap   default 5 000 000.   Backstop against background runaway.
+//                                     Background scans stop adding at the
+//                                     soft cap.  A user-initiated
+//                                     "Scan now" can bump it by +1 M files
+//                                     at a time (capped by hardCeiling).
+//   - hardCeiling default 10 000 000. Absolute ceiling. Nothing exceeds
+//                                     it without a Preferences change.
+//                                     Sized so the worst-case memory
+//                                     footprint stays under ~6 GB combined
+//                                     with PathCacheManager.
 //
 // Threading: same QReadWriteLock pattern as ExcludeSettings.
-//   - Writers (scan workers, FSEvents handler) hold an exclusive lock.
-//   - Readers (FileSearchWorker, cap-status UI) hold a shared lock.
-//
-// Persistence: in-memory only in v1. Rebuilds on each launch.
 class FileCacheManager : public QObject
 {
     Q_OBJECT
 
 public:
+    // Default cap values — pinned constants so tests can assert them.
+    static constexpr int kDefaultSoftCap = 5'000'000;
+    static constexpr int kDefaultHardCeiling = 10'000'000;
+    static constexpr int kSoftCapIncrement = 1'000'000;
+
     static FileCacheManager *instance();
 
-    // Add a single absolute file path. Returns true if added, false if the
-    // cap is full or the path is already present.
+    // Add a single absolute file path. Returns true if added. Background
+    // scans use this directly; "Scan now" first calls bumpSoftCap() to make
+    // room, then the same scan calls addFile() — no source flag needed.
     bool addFile(const QString &absolutePath);
 
-    // Remove a single file path. Used by FSEvents on deletion.
+    // Raise the soft cap by one increment (clamped at hardCeiling). Invoked
+    // by PathCacheManager::expandToUser before a user-initiated scan starts.
+    // Returns the new soft-cap value.
+    int bumpSoftCap();
+
     void removeFile(const QString &absolutePath);
-
-    // Remove every file under the given directory prefix. Used when a parent
-    // directory disappears.
     int removeFilesUnder(const QString &directoryPath);
-
-    // Wipe everything (for rescan).
     void clear();
 
     int fileCount() const;
-    int capLimit() const;
-    bool capReached() const;
-    void setCapLimit(int newCap);
-
-    // Returns true if `path` (absolute) is in the cache.
     bool contains(const QString &absolutePath) const;
-
-    // Snapshot copy. Cheap-ish for hundreds of thousands of entries but
-    // not free — readers that only need filtered results should use
-    // `search()` instead.
     QStringList cachedFiles() const;
 
-    // Linear scan: match all space-separated terms (AND), case-insensitive,
-    // against the absolute path. Optionally scoped to `rootPath` (returns
-    // only paths under that root). Up to `maxResults` hits.
+    // Cap accessors / mutators.
+    int softCap() const;
+    int hardCeiling() const;
+    void setSoftCap(int newCap);
+    void setHardCeiling(int newCeiling);
+    bool capReached() const;     // soft cap reached
+    bool ceilingReached() const; // hard ceiling reached
+
+    // Compatibility wrappers — existing callers used capLimit / setCapLimit.
+    int capLimit() const { return softCap(); }
+    void setCapLimit(int newCap) { setSoftCap(newCap); }
+
+    // Scope policy. Returns true when `absolutePath` is inside the home
+    // directory (or equal to it). Exposed for testing.
+    static bool isUnderHome(const QString &absolutePath);
+
+    // Test seam: override the directory that addFile() treats as the home
+    // boundary. Empty string clears the override (back to QDir::homePath()).
+    // Useful for tests that drive scans against QTemporaryDir (which on
+    // macOS lives outside the user's actual $HOME).
+    static void setHomeOverrideForTests(const QString &path);
+
     QStringList search(const QString &query,
                        const QString &rootPath = QString(),
                        int maxResults = 100) const;
 
 signals:
-    void capReachedSignal();
+    void capReachedSignal();      // soft cap reached
+    void ceilingReachedSignal();  // hard ceiling reached
+    void capRaised(int newSoftCap);
     void cacheUpdated();
 
 private:
@@ -77,13 +106,12 @@ private:
 
     mutable QReadWriteLock m_lock;
     QStringList m_paths;
-    // Parallel array of pre-lowercased paths. Computed once on insert so
-    // search() doesn't pay toLower() per cached path per keystroke — the
-    // bench showed that was the dominant per-query cost.
     QStringList m_lowerPaths;
     QSet<QString> m_pathSet;
     QAtomicInt m_capReached{0};
-    QAtomicInt m_capLimit{500000};
+    QAtomicInt m_ceilingReached{0};
+    QAtomicInt m_softCap{kDefaultSoftCap};
+    QAtomicInt m_hardCeiling{kDefaultHardCeiling};
 
     static FileCacheManager *s_instance;
 };

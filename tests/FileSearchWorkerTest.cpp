@@ -19,16 +19,18 @@ QList<SearchResult> waitForResults(FileSearchWorker *w)
 void FileSearchWorkerTest::initTestCase()
 {
     qRegisterMetaType<QList<SearchResult>>("QList<SearchResult>");
-    // Earlier tests in the suite may have started a scan that is still walking
-    // $HOME. Halt it before we begin so the cache state is deterministic.
     PathCacheManager::instance()->stopScan();
     FileCacheManager::instance()->clear();
+    // Tests fabricate paths outside the real $HOME (`/Users/me/...`,
+    // `/scope/...`). Override the home boundary so they get accepted.
+    FileCacheManager::setHomeOverrideForTests("/");
 }
 
 void FileSearchWorkerTest::cleanup()
 {
     PathCacheManager::instance()->stopScan();
     FileCacheManager::instance()->clear();
+    FileCacheManager::setHomeOverrideForTests("/");
 }
 
 void FileSearchWorkerTest::testEmptyQueryReturnsEmpty()

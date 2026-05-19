@@ -82,6 +82,7 @@ FolderBrowserDialog::FolderBrowserDialog(const QString &initialDir, QWidget *par
 
     updateCacheStatusLabel();
     updateContentFieldState();
+    updateScanHereButtonState();
 }
 
 FolderBrowserDialog::~FolderBrowserDialog()
@@ -476,6 +477,17 @@ void FolderBrowserDialog::setupUi()
     m_pathSelector->setObjectName("pathSelector");
     m_pathSelector->setPath(QDir::homePath());
     rootLayout->addWidget(m_pathSelector, 1);
+
+    // "+ Scan this folder now" — contextual button that adds the current
+    // Search-in path to the index. Uses expandToUser() so the soft cap auto-
+    // raises (up to the hard ceiling) for this deliberate user action.
+    m_scanHereButton = new QPushButton(tr("+ Scan this folder now"), this);
+    m_scanHereButton->setObjectName("scanHereButton");
+    m_scanHereButton->setCursor(Qt::PointingHandCursor);
+    m_scanHereButton->setStyleSheet(SwiftUIStyle::secondaryButtonStyleSheet());
+    rootLayout->addWidget(m_scanHereButton);
+    connect(m_scanHereButton, &QPushButton::clicked,
+            this, &FolderBrowserDialog::onScanHereClicked);
 
     m_mainLayout->addWidget(m_rootContainer);
 
@@ -1136,6 +1148,7 @@ void FolderBrowserDialog::onShowHiddenToggled(bool checked)
 void FolderBrowserDialog::onCacheStatusChanged()
 {
     updateCacheStatusLabel();
+    updateScanHereButtonState();
 }
 
 void FolderBrowserDialog::updateCacheStatusLabel()
@@ -1339,6 +1352,58 @@ void FolderBrowserDialog::onPathSelectorChanged(const QString &path)
 {
     // PathSelector handles validation, so we can use the path directly
     setRootPath(path);
+    updateScanHereButtonState();
+}
+
+void FolderBrowserDialog::onScanHereClicked()
+{
+    const QString path = m_rootPath.isEmpty()
+                             ? QDir::homePath()
+                             : QDir::cleanPath(m_rootPath);
+    if (path.isEmpty() || !QDir(path).exists()) return;
+
+    PathCacheManager::instance()->expandToUser(path);
+    updateScanHereButtonState();
+}
+
+void FolderBrowserDialog::updateScanHereButtonState()
+{
+    if (!m_scanHereButton) return;
+    const QString path = m_rootPath.isEmpty()
+                             ? QDir::homePath()
+                             : QDir::cleanPath(m_rootPath);
+
+    if (path.isEmpty() || !QDir(path).exists()) {
+        m_scanHereButton->setEnabled(false);
+        m_scanHereButton->setText(tr("+ Scan this folder now"));
+        m_scanHereButton->setToolTip(tr("Path doesn't exist"));
+        return;
+    }
+
+    // Already indexed? — true when the path is in the cache and not just
+    // a typed-but-not-yet-scanned string.
+    const bool alreadyIndexed = PathCacheManager::instance()
+                                    ->cachedPaths()
+                                    .contains(path);
+
+    if (alreadyIndexed) {
+        m_scanHereButton->setEnabled(false);
+        m_scanHereButton->setText(tr("Already indexed"));
+        m_scanHereButton->setToolTip(
+            tr("This folder is already in the index. Use Preferences → "
+               "Rebuild index to refresh."));
+        return;
+    }
+
+    m_scanHereButton->setEnabled(true);
+    m_scanHereButton->setText(tr("+ Scan this folder now"));
+    if (!FileCacheManager::isUnderHome(path)) {
+        m_scanHereButton->setToolTip(
+            tr("Will add folders only — files are indexed in your home folder."));
+    } else {
+        m_scanHereButton->setToolTip(
+            tr("Add this folder and its contents to the search index."));
+    }
 }
 
 void FolderBrowserDialog::setRootPath(const QString &path)

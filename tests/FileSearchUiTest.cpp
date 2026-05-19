@@ -16,6 +16,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QTemporaryDir>
 #include <QtTest/QtTest>
 
 namespace {
@@ -223,4 +224,37 @@ void FileSearchUiTest::testTreeFilterRespectsShowHidden()
     }
     QVERIFY(treeFilter(dialog) & QDir::Hidden);
     QVERIFY(treeFilter(dialog) & QDir::Files);
+}
+
+void FileSearchUiTest::testScanHereButtonExistsAndStartsEnabled()
+{
+    // Use a guaranteed-not-already-indexed path so the button is enabled.
+    QTemporaryDir tdir;
+    QVERIFY(tdir.isValid());
+    FolderBrowserDialog dialog(tdir.path());
+    auto *btn = dialog.findChild<QPushButton *>("scanHereButton");
+    QVERIFY(btn);
+    QVERIFY(btn->isEnabled());
+}
+
+void FileSearchUiTest::testScanHereButtonLabelDefault()
+{
+    QTemporaryDir tdir;
+    QVERIFY(tdir.isValid());
+    FolderBrowserDialog dialog(tdir.path());
+    auto *btn = dialog.findChild<QPushButton *>("scanHereButton");
+    QVERIFY(btn);
+    QVERIFY(btn->text().contains("Scan"));
+    QVERIFY(btn->text().contains("now"));
+}
+
+void FileSearchUiTest::testScanHereButtonDisabledWhenPathDoesNotExist()
+{
+    FolderBrowserDialog dialog(QDir::homePath());
+    auto *btn = dialog.findChild<QPushButton *>("scanHereButton");
+    QVERIFY(btn);
+    // Set the dialog's root to a non-existent path via the PathSelector.
+    // dialog::setCurrentRoot is the public mutator for this.
+    dialog.setCurrentRoot("/this/path/does/not/exist/xyz");
+    QVERIFY(!btn->isEnabled());
 }

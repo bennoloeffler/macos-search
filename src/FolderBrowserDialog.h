@@ -77,6 +77,8 @@ private slots:
     void onCacheStatusChanged();
     void onFileCapReached();
     void onPathSelectorChanged(const QString &path);
+    void onScanHereClicked();
+    void updateScanHereButtonState();
     void onSearchModeChanged();
     void onContentTextChanged(const QString &text);
     void onContentRegexToggled(bool on);
@@ -115,6 +117,7 @@ private:
     QLineEdit *m_searchField = nullptr;
     QPushButton *m_excludeButton = nullptr;
     QPushButton *m_showHiddenButton = nullptr;
+    QPushButton *m_scanHereButton = nullptr;
     QLabel *m_cacheStatusLabel = nullptr;
     bool m_showHidden = false;
 
