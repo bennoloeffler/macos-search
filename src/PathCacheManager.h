@@ -99,6 +99,9 @@ private:
     // Thread-safe path storage
     mutable QMutex m_mutex;
     QStringList m_paths;
+    // Parallel array of pre-lowercased paths. Computed once on insert so the
+    // search hot path doesn't pay toLower() per cached path per keystroke.
+    QStringList m_lowerPaths;
     QSet<QString> m_pathSet; // For O(1) lookup
 
     // Filesystem watcher for real-time updates

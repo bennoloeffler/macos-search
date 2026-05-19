@@ -46,11 +46,13 @@ up from 193 baseline.
 | **ContentSearchE2ETest (new)** | 9 |
 | **Total** | **309** |
 
-## Known follow-ups
+## Follow-ups — status
 
-- **Ripgrep binary** is not yet committed to `third_party/rg/macos-arm64/rg`. Drop the official ripgrep 14.x arm64 binary there (procedure in `third_party/rg/README.md`) before shipping a release; until then the bundle relies on a system `rg` on `$PATH`.
-- **`--bench` CLI** for measuring scan + search latency (Phase A4-A5) was scoped but not built — the test layer covers correctness; a benchmark harness writing into `docs/030_performance_budget.md` is the next item for Phase D.
-- **Trigram index** for filename search (Phase D D1) was scoped to "only if measurements force it"; deferred until benches exist.
+| Item | Status |
+|---|---|
+| Vendor ripgrep 14.1.1 arm64 binary into `third_party/rg/macos-arm64/rg` | **Done** (2026-05-19). SHA recorded in `third_party/rg/SHA256SUM`. CMake bundles + ad-hoc-signs it into `Contents/Resources/rg`. |
+| `--bench` CLI flag emitting JSON timings | **Done** — `src/Bench.{h,cpp}`. Usage: `macos-search --bench [--bench-queries N] [--bench-root PATH]`. |
+| Trigram index for filename search (Phase D D1) | **Not needed.** A simpler optimization — caching lowercase paths once on insert — brought file-search p95 from 500 ms → 77 ms in Debug, under the 100 ms target. See `docs/030_performance_budget.md`. |
 
 ---
 

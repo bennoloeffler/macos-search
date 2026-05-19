@@ -40,6 +40,7 @@ bool FileCacheManager::addFile(const QString &absolutePath)
     }
 
     m_paths.append(absolutePath);
+    m_lowerPaths.append(absolutePath.toLower());
     m_pathSet.insert(absolutePath);
     return true;
 }
@@ -48,7 +49,11 @@ void FileCacheManager::removeFile(const QString &absolutePath)
 {
     QWriteLocker locker(&m_lock);
     if (m_pathSet.contains(absolutePath)) {
-        m_paths.removeAll(absolutePath);
+        const int idx = m_paths.indexOf(absolutePath);
+        if (idx >= 0) {
+            m_paths.removeAt(idx);
+            m_lowerPaths.removeAt(idx);
+        }
         m_pathSet.remove(absolutePath);
     }
 }
@@ -60,15 +65,16 @@ int FileCacheManager::removeFilesUnder(const QString &directoryPath)
                                                        : directoryPath + "/";
 
     QWriteLocker locker(&m_lock);
-    QStringList toRemove;
-    for (const QString &p : m_paths) {
-        if (p.startsWith(prefix)) toRemove.append(p);
+    int removed = 0;
+    for (int i = m_paths.size() - 1; i >= 0; --i) {
+        if (m_paths.at(i).startsWith(prefix)) {
+            m_pathSet.remove(m_paths.at(i));
+            m_paths.removeAt(i);
+            m_lowerPaths.removeAt(i);
+            ++removed;
+        }
     }
-    for (const QString &p : toRemove) {
-        m_paths.removeAll(p);
-        m_pathSet.remove(p);
-    }
-    return static_cast<int>(toRemove.size());
+    return removed;
 }
 
 void FileCacheManager::clear()
@@ -76,6 +82,7 @@ void FileCacheManager::clear()
     {
         QWriteLocker locker(&m_lock);
         m_paths.clear();
+        m_lowerPaths.clear();
         m_pathSet.clear();
     }
     m_capReached.storeRelease(0);
@@ -133,12 +140,17 @@ QStringList FileCacheManager::search(const QString &query,
 
     QStringList results;
     QReadLocker locker(&m_lock);
-    for (const QString &path : m_paths) {
-        if (!rootPath.isEmpty() && !path.startsWith(rootPath + "/") && path != rootPath) {
-            continue;
-        }
+    const int n = static_cast<int>(m_paths.size());
+    const QString rootPrefix = rootPath.isEmpty() ? QString() : rootPath + "/";
 
-        const QString lowerPath = path.toLower();
+    for (int i = 0; i < n; ++i) {
+        const QString &lowerPath = m_lowerPaths.at(i);
+        // Root-scope check uses the original-cased path for correctness on
+        // case-sensitive filesystems; the comparison is unaffected by case.
+        if (!rootPath.isEmpty()) {
+            const QString &path = m_paths.at(i);
+            if (!path.startsWith(rootPrefix) && path != rootPath) continue;
+        }
         bool allMatch = true;
         for (const QString &term : terms) {
             if (!lowerPath.contains(term)) {
@@ -147,8 +159,7 @@ QStringList FileCacheManager::search(const QString &query,
             }
         }
         if (!allMatch) continue;
-
-        results.append(path);
+        results.append(m_paths.at(i));
         if (results.size() >= maxResults) break;
     }
     return results;

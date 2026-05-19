@@ -90,6 +90,7 @@ void PathCacheManager::rescan()
     {
         QMutexLocker locker(&m_mutex);
         m_paths.clear();
+        m_lowerPaths.clear();
         m_pathSet.clear();
         m_completedRoots.clear();
     }
@@ -131,7 +132,6 @@ QStringList PathCacheManager::search(const QString &query, const QString &rootPa
         return {};
     }
 
-    // Split query into terms (space = AND)
     QStringList terms = query.toLower().split(' ', Qt::SkipEmptyParts);
     if (terms.isEmpty()) {
         return {};
@@ -140,41 +140,30 @@ QStringList PathCacheManager::search(const QString &query, const QString &rootPa
     QStringList results;
 
     QMutexLocker locker(&m_mutex);
-    for (const QString &path : m_paths) {
-        // Filter by root path if specified
-        if (!rootPath.isEmpty() && !path.startsWith(rootPath + "/") && path != rootPath) {
+    const int n = static_cast<int>(m_paths.size());
+    const QString rootPrefix = rootPath.isEmpty() ? QString() : rootPath + "/";
+    for (int i = 0; i < n; ++i) {
+        const QString &path = m_paths.at(i);
+        if (!rootPath.isEmpty() && !path.startsWith(rootPrefix) && path != rootPath) {
             continue;
         }
-
-        QString lowerPath = path.toLower();
-
-        // Check all terms match (AND logic)
+        // Use the pre-lowercased parallel array so we don't pay toLower()
+        // per path per query.
+        const QString &lowerPath = m_lowerPaths.at(i);
         bool allMatch = true;
         for (const QString &term : terms) {
-            if (!lowerPath.contains(term)) {
-                allMatch = false;
-                break;
-            }
+            if (!lowerPath.contains(term)) { allMatch = false; break; }
         }
+        if (!allMatch) continue;
 
-        if (!allMatch) {
-            continue;
-        }
-
-        // Check if this path is a subfolder of any existing result
+        // "Subfolder of an existing result" suppression — folder-search only.
         bool isSubfolder = false;
         for (const QString &existing : results) {
-            if (path.startsWith(existing + "/")) {
-                isSubfolder = true;
-                break;
-            }
+            if (path.startsWith(existing + "/")) { isSubfolder = true; break; }
         }
-
         if (!isSubfolder) {
             results.append(path);
-            if (results.size() >= maxResults) {
-                break;
-            }
+            if (results.size() >= maxResults) break;
         }
     }
 
@@ -461,6 +450,7 @@ void PathCacheManager::addPathToCache(const QString &path)
     QMutexLocker locker(&m_mutex);
     if (!m_pathSet.contains(path)) {
         m_paths.append(path);
+        m_lowerPaths.append(path.toLower());
         m_pathSet.insert(path);
     }
 }
@@ -469,7 +459,11 @@ void PathCacheManager::removePathFromCache(const QString &path)
 {
     QMutexLocker locker(&m_mutex);
     if (m_pathSet.contains(path)) {
-        m_paths.removeAll(path);
+        const int idx = m_paths.indexOf(path);
+        if (idx >= 0) {
+            m_paths.removeAt(idx);
+            m_lowerPaths.removeAt(idx);
+        }
         m_pathSet.remove(path);
     }
 }
@@ -496,16 +490,14 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
 
         {
             QMutexLocker locker(&m_mutex);
-            QStringList toRemove;
-            for (const QString &cached : m_paths) {
+            for (int i = m_paths.size() - 1; i >= 0; --i) {
+                const QString &cached = m_paths.at(i);
                 if (cached == path || cached.startsWith(path + "/")) {
-                    toRemove.append(cached);
+                    m_pathSet.remove(cached);
+                    m_watcher->removePath(cached);
+                    m_paths.removeAt(i);
+                    m_lowerPaths.removeAt(i);
                 }
-            }
-            for (const QString &p : toRemove) {
-                m_paths.removeAll(p);
-                m_pathSet.remove(p);
-                m_watcher->removePath(p);
             }
         }
         // Also drop every file under the dead directory.
@@ -570,16 +562,14 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
             // Directory was truly deleted - remove it and all children
             {
                 QMutexLocker locker(&m_mutex);
-                QStringList toRemove;
-                for (const QString &p : m_paths) {
+                for (int i = m_paths.size() - 1; i >= 0; --i) {
+                    const QString &p = m_paths.at(i);
                     if (p == cached || p.startsWith(cached + "/")) {
-                        toRemove.append(p);
+                        m_pathSet.remove(p);
+                        m_watcher->removePath(p);
+                        m_paths.removeAt(i);
+                        m_lowerPaths.removeAt(i);
                     }
-                }
-                for (const QString &p : toRemove) {
-                    m_paths.removeAll(p);
-                    m_pathSet.remove(p);
-                    m_watcher->removePath(p);
                 }
             }
             FileCacheManager::instance()->removeFilesUnder(cached);
@@ -818,6 +808,7 @@ void PathCacheManager::scanWorker()
                 QMutexLocker locker(&m_mutex);
                 if (!m_pathSet.contains(fullPath)) {
                     m_paths.append(fullPath);
+                    m_lowerPaths.append(fullPath.toLower());
                     m_pathSet.insert(fullPath);
                     m_foldersIndexed.fetchAndAddRelaxed(1);
                 }
@@ -851,6 +842,7 @@ void PathCacheManager::scanWorker()
                 for (const QString &p : newPaths) {
                     if (!m_pathSet.contains(p)) {
                         m_paths.append(p);
+                        m_lowerPaths.append(p.toLower());
                         m_pathSet.insert(p);
                         m_foldersIndexed.fetchAndAddRelaxed(1);
                     }

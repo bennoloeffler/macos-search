@@ -77,6 +77,10 @@ private:
 
     mutable QReadWriteLock m_lock;
     QStringList m_paths;
+    // Parallel array of pre-lowercased paths. Computed once on insert so
+    // search() doesn't pay toLower() per cached path per keystroke — the
+    // bench showed that was the dominant per-query cost.
+    QStringList m_lowerPaths;
     QSet<QString> m_pathSet;
     QAtomicInt m_capReached{0};
     QAtomicInt m_capLimit{500000};
