@@ -563,6 +563,9 @@ void FolderBrowserDialog::setupUi()
 
     // File system model (directories only)
     m_fileSystemModel = new QFileSystemModel(this);
+    // Initial filter is computed once during construction; subsequent
+    // changes go through applyTreeViewFilter() so Mode + eye toggle both
+    // contribute to the final QDir::Filters bitmask consistently.
     m_fileSystemModel->setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
     m_fileSystemModel->setRootPath(QDir::rootPath());
 
@@ -796,7 +799,17 @@ void FolderBrowserDialog::onFolderClicked(const QModelIndex &index)
 void FolderBrowserDialog::onFolderDoubleClicked(const QModelIndex &index)
 {
     QString path = m_fileSystemModel->filePath(index);
-    navigateTo(path);
+    // Tree view now also surfaces files when the search mode is Files / Both.
+    // Double-clicking a file should open it with the associated app rather
+    // than try to descend into it (which navigateTo() would silently bounce
+    // back to home).
+    QFileInfo info(path);
+    if (info.isDir()) {
+        navigateTo(path);
+    } else if (info.exists()) {
+        m_selectedPath = path;
+        QProcess::startDetached("/usr/bin/open", { path });
+    }
 }
 
 void FolderBrowserDialog::onChooseClicked()
@@ -1101,11 +1114,7 @@ void FolderBrowserDialog::onShowHiddenToggled(bool checked)
     //   No rescan is triggered. Flipping the toggle is now instant.
     m_showHidden = checked;
 
-    QDir::Filters filters = QDir::Dirs | QDir::NoDotAndDotDot;
-    if (m_showHidden) {
-        filters |= QDir::Hidden;
-    }
-    m_fileSystemModel->setFilter(filters);
+    applyTreeViewFilter();
 
     m_pathSelector->fileSystemAdapter()->setShowHidden(m_showHidden);
     m_searchWorker->setIncludeHidden(m_showHidden);
@@ -1157,9 +1166,30 @@ void FolderBrowserDialog::setSearchMode(SearchMode m)
     onSearchModeChanged();
 }
 
+QDir::Filters FolderBrowserDialog::treeViewFilters() const
+{
+    QDir::Filters f = QDir::NoDotAndDotDot | QDir::Dirs;
+    // Files / Both mode also surface files in the navigation tree when no
+    // search query is active. Folders mode keeps the tree folders-only so
+    // it doesn't drown in file noise.
+    if (m_searchMode != SearchMode::Folders) {
+        f |= QDir::Files;
+    }
+    if (m_showHidden) {
+        f |= QDir::Hidden;
+    }
+    return f;
+}
+
+void FolderBrowserDialog::applyTreeViewFilter()
+{
+    if (m_fileSystemModel) m_fileSystemModel->setFilter(treeViewFilters());
+}
+
 void FolderBrowserDialog::onSearchModeChanged()
 {
     saveSettings();
+    applyTreeViewFilter();
     if (!m_lastSearchQuery.isEmpty()) triggerSearch();
 }
 
@@ -1598,7 +1628,6 @@ void FolderBrowserDialog::loadSettings()
     m_showHidden = settings.value("showHidden", false).toBool();
     m_showHiddenButton->setChecked(m_showHidden);
     if (m_showHidden) {
-        m_fileSystemModel->setFilter(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden);
         m_showHiddenButton->setToolTip(tr("Hide hidden folders"));
     }
     m_pathSelector->fileSystemAdapter()->setShowHidden(m_showHidden);
@@ -1620,6 +1649,9 @@ void FolderBrowserDialog::loadSettings()
         m_searchMode = SearchMode::Both;
         if (m_modeBoth) m_modeBoth->setChecked(true);
     }
+
+    // Apply the tree filter now that both Mode + showHidden are known.
+    applyTreeViewFilter();
 
     if (m_contentRegex) {
         m_contentRegex->setChecked(settings.value("contentRegex", false).toBool());

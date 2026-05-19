@@ -8,6 +8,7 @@
 
 #include <QCheckBox>
 #include <QDir>
+#include <QFileSystemModel>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -172,4 +173,54 @@ void FileSearchUiTest::testTwoTabExcludeDialog()
 
     dialog.setCurrentScope(ExcludeSettingsDialog::Scope::Files);
     QCOMPARE(dialog.currentScope(), ExcludeSettingsDialog::Scope::Files);
+}
+
+// Helper for the tree-filter tests below: pull the QFileSystemModel out of
+// the dialog and assert whether QDir::Files is included in the filter.
+static QDir::Filters treeFilter(const FolderBrowserDialog &dialog)
+{
+    if (auto *model = dialog.findChild<QFileSystemModel *>()) {
+        return model->filter();
+    }
+    return {};
+}
+
+void FileSearchUiTest::testTreeFilterFoldersModeExcludesFiles()
+{
+    FolderBrowserDialog dialog(QDir::homePath());
+    dialog.setSearchMode(FolderBrowserDialog::SearchMode::Folders);
+    const QDir::Filters f = treeFilter(dialog);
+    QVERIFY(f & QDir::Dirs);
+    QVERIFY(!(f & QDir::Files));
+}
+
+void FileSearchUiTest::testTreeFilterFilesModeIncludesFiles()
+{
+    FolderBrowserDialog dialog(QDir::homePath());
+    dialog.setSearchMode(FolderBrowserDialog::SearchMode::Files);
+    const QDir::Filters f = treeFilter(dialog);
+    QVERIFY(f & QDir::Dirs);
+    QVERIFY(f & QDir::Files);
+}
+
+void FileSearchUiTest::testTreeFilterBothModeIncludesFiles()
+{
+    FolderBrowserDialog dialog(QDir::homePath());
+    dialog.setSearchMode(FolderBrowserDialog::SearchMode::Both);
+    const QDir::Filters f = treeFilter(dialog);
+    QVERIFY(f & QDir::Dirs);
+    QVERIFY(f & QDir::Files);
+}
+
+void FileSearchUiTest::testTreeFilterRespectsShowHidden()
+{
+    FolderBrowserDialog dialog(QDir::homePath());
+    dialog.setSearchMode(FolderBrowserDialog::SearchMode::Files);
+    QVERIFY(!(treeFilter(dialog) & QDir::Hidden));
+
+    if (auto *eye = dialog.findChild<QPushButton *>("showHiddenButton")) {
+        eye->setChecked(true);  // toggles via signal
+    }
+    QVERIFY(treeFilter(dialog) & QDir::Hidden);
+    QVERIFY(treeFilter(dialog) & QDir::Files);
 }

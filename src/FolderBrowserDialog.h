@@ -2,6 +2,7 @@
 #define FOLDERBROWSERDIALOG_H
 
 #include <QDialog>
+#include <QDir>
 #include "FolderSearchWorker.h"
 
 class QVBoxLayout;
@@ -97,6 +98,11 @@ private:
     QString resolvedPath() const;
     void saveSettings();
     void loadSettings();
+    // Compute the tree-view filter based on the current search mode and the
+    // eye toggle. Files mode / Both mode include QDir::Files; Folders mode
+    // stays folders-only.
+    QDir::Filters treeViewFilters() const;
+    void applyTreeViewFilter();
 
     QVBoxLayout *m_mainLayout = nullptr;
     QLabel *m_titleLabel = nullptr;

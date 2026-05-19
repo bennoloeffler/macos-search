@@ -21,6 +21,10 @@ private slots:
     void testHelpHintUpdatesWithMode();
     void testHelpLineMentionsAltEnter();
     void testTwoTabExcludeDialog();
+    void testTreeFilterFoldersModeExcludesFiles();
+    void testTreeFilterFilesModeIncludesFiles();
+    void testTreeFilterBothModeIncludesFiles();
+    void testTreeFilterRespectsShowHidden();
 };
 
 #endif // FILESEARCHUITEST_H
