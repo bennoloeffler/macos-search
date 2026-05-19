@@ -977,21 +977,21 @@ void FolderBrowserDialog::rebuildMergedResults()
     // Cap merged list at 200 (folders + files combined).
     if (rows.size() > 200) rows.resize(200);
 
-    // Helpers for sizing widget items so the list's contentsSize is wide
-    // enough to trigger the horizontal scrollbar when paths overflow.
+    // Helpers for sizing widget items. Width is measured from the inner
+    // container so paths can trigger the horizontal scrollbar; height is
+    // FIXED per row class so all rows look uniform regardless of HTML
+    // side-effects in their RichText labels (extension chips, badges,
+    // match counts). Relying on container->sizeHint().height() produced
+    // wildly inconsistent row heights — the bug reported 2026-05-19.
     auto sizeItemToContent = [this](QListWidgetItem *item, QWidget *w,
-                                    int minHeight) {
-        // ensurePolished + adjustSize forces the layout to compute its
-        // natural sizeHint even before the widget is shown. Without this,
-        // QListWidget renders an empty row (regression observed at row
-        // height ≈ 0 when items had not been laid out yet).
+                                    int fixedHeight) {
+        w->setFixedHeight(fixedHeight);
         w->ensurePolished();
         w->adjustSize();
-        const QSize hint = w->sizeHint();
-        const int width = qMax(hint.width() + 16,
+        const int natural = w->sizeHint().width();
+        const int width = qMax(natural + 16,
                                m_searchResultsList->viewport()->width());
-        const int height = qMax(minHeight, hint.height());
-        item->setSizeHint(QSize(width, height));
+        item->setSizeHint(QSize(width, fixedHeight));
     };
 
     for (const Row &row : rows) {
@@ -1051,7 +1051,7 @@ void FolderBrowserDialog::rebuildMergedResults()
         item->setData(Qt::UserRole, row.sr.path);
         item->setData(Qt::UserRole + 1, /*lineNumber*/ 0);
         m_searchResultsList->setItemWidget(item, container);
-        sizeItemToContent(item, container, /*minHeight*/ 32);
+        sizeItemToContent(item, container, /*fixedHeight*/ 36);
 
         // Inline content-match child rows under this file (if any).
         if (row.isFile && matchesIt != m_contentMatchesByFile.end()) {
@@ -1097,7 +1097,7 @@ void FolderBrowserDialog::rebuildMergedResults()
                 childItem->setData(Qt::UserRole, row.sr.path);
                 childItem->setData(Qt::UserRole + 1, m.lineNumber);
                 m_searchResultsList->setItemWidget(childItem, cw);
-                sizeItemToContent(childItem, cw, /*minHeight*/ 22);
+                sizeItemToContent(childItem, cw, /*fixedHeight*/ 24);
             }
             if (matches.size() > shownCap) {
                 const QString more =
