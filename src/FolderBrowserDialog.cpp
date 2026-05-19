@@ -1,34 +1,42 @@
 #include "FolderBrowserDialog.h"
+#include "ContentSearchSettings.h"
+#include "EditorLauncher.h"
 #include "ExcludeSettings.h"
 #include "ExcludeSettingsDialog.h"
-#include "PreferencesDialog.h"
+#include "FileCacheManager.h"
+#include "FileSearchWorker.h"
 #include "FolderSearchWorker.h"
 #include "IconRegistry.h"
 #include "PathCacheManager.h"
 #include "PathSelector/FileSystemAdapter.h"
 #include "PathSelector/PathSelector.h"
+#include "PreferencesDialog.h"
+#include "RipgrepRunner.h"
 #include "SwiftUIStyle.h"
-#include <QProcess>
-#include <QMenu>
-#include <QFileInfo>
 #include <QAction>
-#include <QFrame>
 #include <QApplication>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QTreeView>
-#include <QPushButton>
-#include <QFileSystemModel>
+#include <QCheckBox>
 #include <QDir>
+#include <QFileInfo>
+#include <QFileSystemModel>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QHeaderView>
-#include <QLineEdit>
-#include <QListWidget>
-#include <QStackedWidget>
-#include <QKeyEvent>
 #include <QIcon>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMenu>
+#include <QMessageBox>
+#include <QProcess>
+#include <QPushButton>
 #include <QSettings>
+#include <QStackedWidget>
+#include <QToolTip>
+#include <QTreeView>
+#include <QVBoxLayout>
 #include <algorithm>
 
 FolderBrowserDialog::FolderBrowserDialog(const QString &initialDir, QWidget *parent)
@@ -37,22 +45,28 @@ FolderBrowserDialog::FolderBrowserDialog(const QString &initialDir, QWidget *par
 {
     setObjectName("FolderBrowserDialog");
     setWindowTitle(tr("Select Project Folder"));
-    // Standalone-app drift: wider default so the favorites row fits.
-    setMinimumSize(720, 520);
-    resize(880, 620);
+    // Standalone-app drift: width raised to 820 to fit the segmented mode
+    // control + content-search row without crowding the favorites sidebar.
+    setMinimumSize(820, 560);
+    resize(980, 700);
 
-    // Create exclude settings
+    qRegisterMetaType<QList<ContentMatch>>("QList<ContentMatch>");
+
     m_excludeSettings = new ExcludeSettings(this);
+    m_contentSettings = new ContentSearchSettings(this);
 
-    // Create search worker
     m_searchWorker = new FolderSearchWorker(this);
+    m_fileSearchWorker = new FileSearchWorker(this);
+    m_ripgrep = new RipgrepRunner(this);
+
+    // Honour the persisted cap before any scanning kicks off.
+    FileCacheManager::instance()->setCapLimit(m_contentSettings->fileCacheCap());
 
     setupUi();
     loadSettings();
     navigateTo(initialDir);
     updateResolvedPathLabel();
 
-    // Connect to cache updates
     connect(PathCacheManager::instance(), &PathCacheManager::scanStarted,
             this, &FolderBrowserDialog::onCacheStatusChanged);
     connect(PathCacheManager::instance(), &PathCacheManager::scanProgress,
@@ -61,8 +75,11 @@ FolderBrowserDialog::FolderBrowserDialog(const QString &initialDir, QWidget *par
             this, &FolderBrowserDialog::onCacheStatusChanged);
     connect(PathCacheManager::instance(), &PathCacheManager::cacheUpdated,
             this, &FolderBrowserDialog::onCacheStatusChanged);
+    connect(FileCacheManager::instance(), &FileCacheManager::capReachedSignal,
+            this, &FolderBrowserDialog::onFileCapReached);
 
     updateCacheStatusLabel();
+    updateContentFieldState();
 }
 
 FolderBrowserDialog::~FolderBrowserDialog()
@@ -153,6 +170,15 @@ void FolderBrowserDialog::keyPressEvent(QKeyEvent *event)
     }
     if ((key == Qt::Key_Return || key == Qt::Key_Enter) && cmd) {
         onOpenInFinderClicked();
+        event->accept(); return;
+    }
+    // ⌥⏎ → open at line in VS Code (best-effort; falls back to `open`).
+    if ((key == Qt::Key_Return || key == Qt::Key_Enter)
+        && (mods & Qt::AltModifier)) {
+        const QString path = resolvedPath();
+        if (!path.isEmpty()) {
+            EditorLauncher::openAtLine(path, m_selectedLineNumber);
+        }
         event->accept(); return;
     }
     if ((key == Qt::Key_Return || key == Qt::Key_Enter) && !cmd) {
@@ -273,6 +299,46 @@ void FolderBrowserDialog::setupUi()
     toolbarLayout->addWidget(m_cacheStatusLabel);
 
     toolbarLayout->addStretch();
+
+    // === Segmented control: Folders | Files | Both ==========================
+    // Persisted in QSettings("searchMode"). Default: "both".
+    auto makeSegment = [this](const QString &label, const QString &name) {
+        auto *btn = new QPushButton(label, this);
+        btn->setObjectName(name);
+        btn->setCheckable(true);
+        btn->setAutoExclusive(true);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setMinimumWidth(60);
+        btn->setStyleSheet(QStringLiteral(
+            "QPushButton { padding: 4px 10px; border: 1px solid %1; "
+            "background: %2; color: %3; font-size: 11px; }"
+            "QPushButton:checked { background: %4; color: white; "
+            "border-color: %4; font-weight: 600; }")
+                .arg(SwiftUIStyle::subtleBorder(),
+                     SwiftUIStyle::secondaryBackground(),
+                     SwiftUIStyle::primaryTextColor(),
+                     SwiftUIStyle::BrandColor));
+        return btn;
+    };
+    m_modeFolders = makeSegment(tr("Folders"), "modeFolders");
+    m_modeFiles   = makeSegment(tr("Files"),   "modeFiles");
+    m_modeBoth    = makeSegment(tr("Both"),    "modeBoth");
+    m_modeBoth->setChecked(true);  // overridden by loadSettings() below
+
+    toolbarLayout->addWidget(m_modeFolders);
+    toolbarLayout->addWidget(m_modeFiles);
+    toolbarLayout->addWidget(m_modeBoth);
+    toolbarLayout->addSpacing(12);
+
+    connect(m_modeFolders, &QPushButton::toggled, this, [this](bool on) {
+        if (on) { m_searchMode = SearchMode::Folders; onSearchModeChanged(); }
+    });
+    connect(m_modeFiles, &QPushButton::toggled, this, [this](bool on) {
+        if (on) { m_searchMode = SearchMode::Files; onSearchModeChanged(); }
+    });
+    connect(m_modeBoth, &QPushButton::toggled, this, [this](bool on) {
+        if (on) { m_searchMode = SearchMode::Both; onSearchModeChanged(); }
+    });
 
     // Show hidden folders toggle (eye icon)
     m_showHiddenButton = new QPushButton(this);
@@ -428,12 +494,66 @@ void FolderBrowserDialog::setupUi()
     // Search field
     m_searchField = new QLineEdit(this);
     m_searchField->setObjectName("searchField");
-    m_searchField->setPlaceholderText(tr("Type to search folders..."));
+    m_searchField->setPlaceholderText(tr("Type to search folders and files..."));
     m_searchField->setClearButtonEnabled(true);
     m_searchField->setStyleSheet(SwiftUIStyle::inputStyleSheet());
     searchLayout->addWidget(m_searchField, 1);
 
     m_mainLayout->addWidget(m_searchContainer);
+
+    // === INSIDE CONTENTS: ripgrep-backed content search =====================
+    // Visible at all times. Enabled only when filename results ≤ threshold.
+    m_contentContainer = new QWidget(this);
+    m_contentContainer->setObjectName("contentContainer");
+    auto *contentLayout = new QHBoxLayout(m_contentContainer);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->setSpacing(SwiftUIStyle::SpacingSmall);
+
+    QLabel *contentLabel = new QLabel(tr("Inside contents:"), this);
+    contentLabel->setObjectName("contentLabel");
+    contentLabel->setFixedWidth(110);
+    contentLabel->setStyleSheet(QString("color: %1; font-size: 12px;")
+                                    .arg(SwiftUIStyle::secondaryTextColor()));
+    contentLayout->addWidget(contentLabel);
+
+    m_contentField = new QLineEdit(this);
+    m_contentField->setObjectName("contentField");
+    m_contentField->setPlaceholderText(tr("Narrow filename filter to enable…"));
+    m_contentField->setClearButtonEnabled(true);
+    m_contentField->setStyleSheet(SwiftUIStyle::inputStyleSheet());
+    contentLayout->addWidget(m_contentField, 1);
+
+    m_contentRegex = new QCheckBox(tr("Regex"), this);
+    m_contentRegex->setObjectName("contentRegex");
+    m_contentRegex->setToolTip(tr("Interpret the content query as a regular expression"));
+    contentLayout->addWidget(m_contentRegex);
+
+    m_contentHelpButton = new QPushButton(tr("?"), this);
+    m_contentHelpButton->setObjectName("contentHelpButton");
+    m_contentHelpButton->setFixedSize(24, 24);
+    m_contentHelpButton->setCursor(Qt::PointingHandCursor);
+    m_contentHelpButton->setToolTip(tr("Regex cheatsheet"));
+    contentLayout->addWidget(m_contentHelpButton);
+
+    m_mainLayout->addWidget(m_contentContainer);
+
+    m_contentHintLabel = new QLabel(this);
+    m_contentHintLabel->setObjectName("contentHintLabel");
+    m_contentHintLabel->setStyleSheet(
+        QString("color: %1; font-size: 11px; padding: 0px 0px 4px 116px;")
+            .arg(SwiftUIStyle::secondaryTextColor()));
+    m_mainLayout->addWidget(m_contentHintLabel);
+
+    connect(m_contentField, &QLineEdit::textChanged,
+            this, &FolderBrowserDialog::onContentTextChanged);
+    connect(m_contentRegex, &QCheckBox::toggled,
+            this, &FolderBrowserDialog::onContentRegexToggled);
+    connect(m_contentHelpButton, &QPushButton::clicked,
+            this, &FolderBrowserDialog::onContentHelpClicked);
+    connect(m_ripgrep, &RipgrepRunner::matchesReady,
+            this, &FolderBrowserDialog::onContentMatches);
+    connect(m_ripgrep, &RipgrepRunner::finished,
+            this, &FolderBrowserDialog::onContentFinished);
 
     // Stacked widget for tree view and search results
     m_viewStack = new QStackedWidget(this);
@@ -501,6 +621,7 @@ void FolderBrowserDialog::setupUi()
         "<b>↑↓</b> nav &nbsp;·&nbsp; "
         "<b>↵</b> open &nbsp;·&nbsp; "
         "<b>⌘↵</b> reveal &nbsp;·&nbsp; "
+        "<b>⌥↵</b> editor &nbsp;·&nbsp; "
         "<b>⌘F</b> search &nbsp;·&nbsp; "
         "<b>⌘L</b> path &nbsp;·&nbsp; "
         "<b>⌘↑</b> up &nbsp;·&nbsp; "
@@ -580,6 +701,8 @@ void FolderBrowserDialog::setupUi()
             this, &FolderBrowserDialog::onChooseClicked);
     connect(m_searchWorker, &FolderSearchWorker::resultsReady,
             this, &FolderBrowserDialog::onSearchResultsReady);
+    connect(m_fileSearchWorker, &FileSearchWorker::resultsReady,
+            this, &FolderBrowserDialog::onFileSearchResultsReady);
     connect(m_searchResultsList, &QListWidget::itemClicked,
             this, &FolderBrowserDialog::onSearchResultClicked);
     connect(m_searchResultsList, &QListWidget::itemDoubleClicked,
@@ -587,7 +710,14 @@ void FolderBrowserDialog::setupUi()
     connect(m_searchResultsList, &QListWidget::itemActivated,
             this, &FolderBrowserDialog::onSearchResultDoubleClicked);
     connect(m_searchResultsList, &QListWidget::currentRowChanged,
-            this, [this]() { updateResolvedPathLabel(); });
+            this, [this](int row) {
+                if (row >= 0) {
+                    if (auto *item = m_searchResultsList->item(row)) {
+                        m_selectedLineNumber = item->data(Qt::UserRole + 1).toInt();
+                    }
+                }
+                updateResolvedPathLabel();
+            });
     connect(m_excludeButton, &QPushButton::clicked,
             this, &FolderBrowserDialog::onExcludeButtonClicked);
     connect(m_showHiddenButton, &QPushButton::toggled,
@@ -719,35 +849,114 @@ void FolderBrowserDialog::onSearchTextChanged(const QString &text)
     m_lastSearchQuery = text;
 
     if (text.isEmpty()) {
-        // Switch back to tree view
+        // Switch back to tree view, clear cached results.
         m_viewStack->setCurrentWidget(m_folderTreeView);
         m_searchWorker->cancel();
+        m_fileSearchWorker->cancel();
+        m_ripgrep->cancel();
+        m_lastFolderResults.clear();
+        m_lastFileResults.clear();
+        m_contentMatchesByFile.clear();
+        m_contentMatchTotal = 0;
         updateResolvedPathLabel();
+        updateContentFieldState();
         return;
     }
 
     // Switch to search results view
     m_viewStack->setCurrentWidget(m_searchResultsList);
 
-    // Trigger search with root path filter
-    m_searchWorker->search(text, m_rootPath);
+    triggerSearch();
+}
+
+void FolderBrowserDialog::triggerSearch()
+{
+    const QString &q = m_lastSearchQuery;
+    const bool wantFolders = (m_searchMode == SearchMode::Folders ||
+                              m_searchMode == SearchMode::Both);
+    const bool wantFiles   = (m_searchMode == SearchMode::Files ||
+                              m_searchMode == SearchMode::Both);
+
+    if (wantFolders) {
+        m_searchWorker->search(q, m_rootPath);
+    } else {
+        m_searchWorker->cancel();
+        m_lastFolderResults.clear();
+    }
+    if (wantFiles) {
+        m_fileSearchWorker->search(q, m_rootPath);
+    } else {
+        m_fileSearchWorker->cancel();
+        m_lastFileResults.clear();
+    }
+    if (!wantFolders && !wantFiles) {
+        rebuildMergedResults();
+    }
+    // Make sure the content-search gating reflects the new mode/query even
+    // when no worker emits a follow-up (e.g. mode switched away from Files).
+    updateContentFieldState();
 }
 
 void FolderBrowserDialog::onSearchResultsReady(const QList<SearchResult> &results)
 {
-    m_searchResultsList->clear();
+    m_lastFolderResults = results;
+    rebuildMergedResults();
+}
 
-    for (const SearchResult &result : results) {
+void FolderBrowserDialog::onFileSearchResultsReady(const QList<SearchResult> &results)
+{
+    m_lastFileResults = results;
+    rebuildMergedResults();
+    // Whenever the file-result set changes, the content-search gating may flip.
+    updateContentFieldState();
+    // If the user has a content query, kick off the ripgrep run on the new
+    // file set (or clear results if the threshold dropped us out of range).
+    triggerContentSearch();
+}
+
+QString FolderBrowserDialog::extensionChipHtml(const QString &path)
+{
+    QString ext = QFileInfo(path).suffix().toLower();
+    if (ext.isEmpty()) return QString();
+    return QString("<span style='color:%1; font-size:10px; "
+                   "background:%2; padding:1px 4px; border-radius:3px; "
+                   "margin-left:6px;'>.%3</span>")
+        .arg(SwiftUIStyle::secondaryTextColor(),
+             SwiftUIStyle::chipBackground(),
+             ext.toHtmlEscaped());
+}
+
+void FolderBrowserDialog::rebuildMergedResults()
+{
+    m_searchResultsList->clear();
+    m_selectedLineNumber = 0;
+
+    // Merge folder and file results, sort by score descending.
+    struct Row {
+        SearchResult sr;
+        bool isFile = false;
+    };
+    QList<Row> rows;
+    rows.reserve(m_lastFolderResults.size() + m_lastFileResults.size());
+    for (const SearchResult &r : m_lastFolderResults) rows.append({ r, false });
+    for (const SearchResult &r : m_lastFileResults)   rows.append({ r, true  });
+    std::sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) {
+        if (a.sr.score != b.sr.score) return a.sr.score > b.sr.score;
+        return a.sr.path.length() < b.sr.path.length();
+    });
+    // Cap merged list at 200 (folders + files combined).
+    if (rows.size() > 200) rows.resize(200);
+
+    for (const Row &row : rows) {
         auto *item = new QListWidgetItem(m_searchResultsList);
 
-        // Create container for score badge and path
         auto *container = new QWidget();
         auto *layout = new QHBoxLayout(container);
         layout->setContentsMargins(12, 0, 12, 0);
         layout->setSpacing(8);
 
         // Score badge (small pill)
-        auto *scoreLabel = new QLabel(QString::number(result.score));
+        auto *scoreLabel = new QLabel(QString::number(row.sr.score));
         scoreLabel->setFixedWidth(28);
         scoreLabel->setAlignment(Qt::AlignCenter);
         scoreLabel->setStyleSheet(
@@ -756,26 +965,83 @@ void FolderBrowserDialog::onSearchResultsReady(const QList<SearchResult> &result
         );
         layout->addWidget(scoreLabel);
 
-        // Path with highlighted matches
-        QString displayText = highlightMatches(result.path, m_lastSearchQuery);
+        // Kind glyph: 📁 for folders, 📄 for files (text glyph, no asset dep).
+        auto *kindLabel = new QLabel(row.isFile ? QStringLiteral("📄")
+                                                : QStringLiteral("📁"));
+        kindLabel->setStyleSheet("font-size: 12px;");
+        layout->addWidget(kindLabel);
+
+        // Path with highlighted matches + extension chip for files.
+        QString displayText = highlightMatches(row.sr.path, m_lastSearchQuery);
+        if (row.isFile) displayText += extensionChipHtml(row.sr.path);
         auto *pathLabel = new QLabel(displayText);
         pathLabel->setTextFormat(Qt::RichText);
         layout->addWidget(pathLabel, 1);
 
-        item->setData(Qt::UserRole, result.path);
-        item->setSizeHint(QSize(0, 32));
+        // Content-match count badge (if any matches found in this file).
+        const auto matchesIt = m_contentMatchesByFile.find(row.sr.path);
+        if (row.isFile && matchesIt != m_contentMatchesByFile.end()
+            && !matchesIt.value().isEmpty()) {
+            auto *cm = new QLabel(QString("%1 match%2")
+                                      .arg(matchesIt.value().size())
+                                      .arg(matchesIt.value().size() == 1 ? "" : "es"));
+            cm->setStyleSheet(QString(
+                "color: white; background: %1; border-radius: 8px; "
+                "padding: 1px 8px; font-size: 10px; font-weight: 600;")
+                                  .arg(SwiftUIStyle::BrandColor));
+            layout->addWidget(cm);
+        }
 
+        item->setData(Qt::UserRole, row.sr.path);
+        item->setData(Qt::UserRole + 1, /*lineNumber*/ 0);
+        item->setSizeHint(QSize(0, 32));
         m_searchResultsList->setItemWidget(item, container);
+
+        // Inline content-match child rows under this file (if any).
+        if (row.isFile && matchesIt != m_contentMatchesByFile.end()) {
+            const QList<ContentMatch> &matches = matchesIt.value();
+            const int shownCap = qMin(5, matches.size());
+            for (int i = 0; i < shownCap; ++i) {
+                const ContentMatch &m = matches.at(i);
+                auto *childItem = new QListWidgetItem(m_searchResultsList);
+                auto *cw = new QWidget();
+                auto *cl = new QHBoxLayout(cw);
+                cl->setContentsMargins(56, 0, 12, 0);
+                cl->setSpacing(8);
+
+                auto *lineNo = new QLabel(QString("L%1").arg(m.lineNumber));
+                lineNo->setFixedWidth(48);
+                lineNo->setStyleSheet(QString("color: %1; font-size: 10px;")
+                                          .arg(SwiftUIStyle::secondaryTextColor()));
+                cl->addWidget(lineNo);
+
+                auto *snip = new QLabel(highlightSnippet(m.snippet, m.matchStart, m.matchEnd));
+                snip->setTextFormat(Qt::RichText);
+                snip->setStyleSheet(QString("color: %1; font-family: monospace; font-size: 11px;")
+                                        .arg(SwiftUIStyle::primaryTextColor()));
+                cl->addWidget(snip, 1);
+
+                childItem->setData(Qt::UserRole, row.sr.path);
+                childItem->setData(Qt::UserRole + 1, m.lineNumber);
+                childItem->setSizeHint(QSize(0, 22));
+                m_searchResultsList->setItemWidget(childItem, cw);
+            }
+            if (matches.size() > shownCap) {
+                auto *more = new QListWidgetItem(
+                    tr("    + %1 more matches").arg(matches.size() - shownCap),
+                    m_searchResultsList);
+                more->setFlags(more->flags() & ~Qt::ItemIsSelectable);
+            }
+        }
     }
 
-    if (results.isEmpty() && !m_lastSearchQuery.isEmpty()) {
+    if (rows.isEmpty() && !m_lastSearchQuery.isEmpty()) {
         auto *item = new QListWidgetItem(tr("No results found"));
         item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
         m_searchResultsList->addItem(item);
     }
 
-    // Select first result so it shows in "Will open:" and Enter works
-    if (!results.isEmpty()) {
+    if (!rows.isEmpty()) {
         m_searchResultsList->setCurrentRow(0);
     }
 
@@ -785,11 +1051,16 @@ void FolderBrowserDialog::onSearchResultsReady(const QList<SearchResult> &result
 void FolderBrowserDialog::onSearchResultClicked(QListWidgetItem *item)
 {
     QString path = item->data(Qt::UserRole).toString();
+    const int lineNo = item->data(Qt::UserRole + 1).toInt();
     if (!path.isEmpty()) {
+        m_selectedLineNumber = lineNo;
         m_currentPath = path;
         updateResolvedPathLabel();
-        // Set as root for scoped searching (this also updates root field)
-        setRootPath(path);
+        // Only re-scope when a folder is selected. Selecting a file leaves
+        // the root alone so the user can scan through multiple file hits.
+        if (lineNo == 0 && QFileInfo(path).isDir()) {
+            setRootPath(path);
+        }
     }
 }
 
@@ -855,11 +1126,12 @@ void FolderBrowserDialog::onShowHiddenToggled(bool checked)
 
     m_pathSelector->fileSystemAdapter()->setShowHidden(m_showHidden);
     m_searchWorker->setIncludeHidden(m_showHidden);
+    if (m_fileSearchWorker) m_fileSearchWorker->setIncludeHidden(m_showHidden);
 
     // If a query is currently active, re-run it so visible results
     // reflect the new filter immediately.
     if (!m_lastSearchQuery.isEmpty()) {
-        m_searchWorker->search(m_lastSearchQuery, m_rootPath);
+        triggerSearch();
     }
 
     m_showHiddenButton->setToolTip(m_showHidden
@@ -887,6 +1159,180 @@ void FolderBrowserDialog::updateCacheStatusLabel()
         m_cacheStatusLabel->setText(tr("Ready - %1 folders indexed").arg(count));
         m_cacheStatusLabel->setStyleSheet("color: #27ae60; font-size: 11px;");
     }
+}
+
+void FolderBrowserDialog::setSearchMode(SearchMode m)
+{
+    if (m == m_searchMode) return;
+    m_searchMode = m;
+    if (m_modeFolders) m_modeFolders->setChecked(m == SearchMode::Folders);
+    if (m_modeFiles)   m_modeFiles->setChecked(m == SearchMode::Files);
+    if (m_modeBoth)    m_modeBoth->setChecked(m == SearchMode::Both);
+    onSearchModeChanged();
+}
+
+void FolderBrowserDialog::onSearchModeChanged()
+{
+    saveSettings();
+    if (!m_lastSearchQuery.isEmpty()) triggerSearch();
+}
+
+void FolderBrowserDialog::onFileCapReached()
+{
+    // Surface a one-shot warning in the toolbar status label.
+    m_cacheStatusLabel->setText(
+        tr("File index cap reached (%1) — tighten excludes or raise in Preferences")
+            .arg(FileCacheManager::instance()->capLimit()));
+    m_cacheStatusLabel->setStyleSheet("color: #e67e22; font-size: 11px;");
+}
+
+void FolderBrowserDialog::updateContentFieldState()
+{
+    if (!m_contentField || !m_contentSettings) return;
+    const int threshold = m_contentSettings->threshold();
+    const int fileResults = m_lastFileResults.size();
+    const bool wantsFiles = (m_searchMode != SearchMode::Folders);
+
+    bool enabled = false;
+    QString hint;
+
+    if (m_lastSearchQuery.isEmpty()) {
+        hint = tr("Type a filename query first to narrow the file set.");
+    } else if (!wantsFiles) {
+        hint = tr("Switch to Files or Both to enable content search.");
+    } else if (fileResults == 0) {
+        hint = tr("No files match the filename filter.");
+    } else if (fileResults > threshold) {
+        hint = tr("Narrow filename filter to ≤ %1 files to enable content search (currently %2).")
+                  .arg(threshold).arg(fileResults);
+    } else {
+        enabled = true;
+        if (m_contentField->text().isEmpty()) {
+            hint = tr("Ready — content-searching %1 file%2.")
+                       .arg(fileResults).arg(fileResults == 1 ? "" : "s");
+        } else if (m_contentBusy) {
+            hint = tr("Searching contents in %1 file%2…")
+                       .arg(fileResults).arg(fileResults == 1 ? "" : "s");
+        } else {
+            hint = tr("Found %1 match%2 in %3 file%4.")
+                       .arg(m_contentMatchTotal)
+                       .arg(m_contentMatchTotal == 1 ? "" : "es")
+                       .arg(m_contentMatchesByFile.size())
+                       .arg(m_contentMatchesByFile.size() == 1 ? "" : "s");
+        }
+    }
+
+    m_contentField->setEnabled(enabled);
+    m_contentHintLabel->setText(hint);
+}
+
+void FolderBrowserDialog::onContentTextChanged(const QString & /*text*/)
+{
+    triggerContentSearch();
+}
+
+void FolderBrowserDialog::onContentRegexToggled(bool /*on*/)
+{
+    triggerContentSearch();
+}
+
+void FolderBrowserDialog::onContentHelpClicked()
+{
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Regex cheatsheet"));
+    box.setIcon(QMessageBox::NoIcon);
+    box.setTextFormat(Qt::RichText);
+    box.setText(tr(
+        "<h3>Regex cheatsheet</h3>"
+        "<table cellspacing='4' cellpadding='2'>"
+        "<tr><td><code>(?i)foo</code></td><td>Case-insensitive match</td></tr>"
+        "<tr><td><code>\\bfoo\\b</code></td><td>Word boundary</td></tr>"
+        "<tr><td><code>foo|bar</code></td><td>Alternation</td></tr>"
+        "<tr><td><code>^TODO</code></td><td>Start of line</td></tr>"
+        "<tr><td><code>;\\s*$</code></td><td>End of line, ignoring trailing whitespace</td></tr>"
+        "<tr><td><code>[A-Z]{3,}</code></td><td>Three or more uppercase letters</td></tr>"
+        "<tr><td><code>\\d{3,}</code></td><td>Three or more digits</td></tr>"
+        "<tr><td><code>[^/]+</code></td><td>One or more non-slash characters</td></tr>"
+        "<tr><td><code>1\\.2\\.3</code></td><td>Escaped literal dots</td></tr>"
+        "<tr><td><code>id=(\\d+)</code></td><td>Capture group around digits</td></tr>"
+        "</table>"));
+    box.exec();
+}
+
+void FolderBrowserDialog::triggerContentSearch()
+{
+    if (!m_contentField || !m_contentSettings) return;
+
+    // Always cancel in-flight rg first.
+    m_ripgrep->cancel();
+    m_contentMatchesByFile.clear();
+    m_contentMatchTotal = 0;
+    m_contentBusy = false;
+
+    const QString query = m_contentField->text();
+    const int threshold = m_contentSettings->threshold();
+    if (query.isEmpty() || m_lastFileResults.isEmpty()
+        || m_lastFileResults.size() > threshold
+        || m_searchMode == SearchMode::Folders) {
+        rebuildMergedResults();
+        updateContentFieldState();
+        return;
+    }
+
+    // Collect candidate paths, excluding blacklisted extensions and files
+    // larger than the per-file size cap. ripgrep's --max-filesize is a no-op
+    // on explicit positional args, so we enforce the cap ourselves here.
+    const qint64 sizeCapBytes =
+        qint64(m_contentSettings->maxFileSizeMB()) * 1024 * 1024;
+    QStringList paths;
+    for (const SearchResult &r : m_lastFileResults) {
+        if (m_contentSettings->isExtensionBlacklisted(r.path)) continue;
+        const QFileInfo info(r.path);
+        if (info.size() > sizeCapBytes) continue;
+        paths.append(r.path);
+    }
+    if (paths.isEmpty()) {
+        rebuildMergedResults();
+        updateContentFieldState();
+        return;
+    }
+
+    m_contentBusy = true;
+    m_ripgrep->start(query, paths, m_contentRegex && m_contentRegex->isChecked(),
+                     m_contentSettings->maxFileSizeMB(), /*maxPerFile*/ 20);
+    updateContentFieldState();
+}
+
+void FolderBrowserDialog::onContentMatches(const QList<ContentMatch> &matches)
+{
+    for (const ContentMatch &m : matches) {
+        m_contentMatchesByFile[m.filePath].append(m);
+    }
+    m_contentMatchTotal += matches.size();
+    // Don't rebuild on every batch — wait for finished. Update hint count.
+    updateContentFieldState();
+}
+
+void FolderBrowserDialog::onContentFinished(int /*total*/)
+{
+    m_contentBusy = false;
+    rebuildMergedResults();
+    updateContentFieldState();
+}
+
+QString FolderBrowserDialog::highlightSnippet(const QString &snippet, int start, int end)
+{
+    if (start < 0 || end <= start || start >= snippet.length()) {
+        return snippet.toHtmlEscaped();
+    }
+    end = qMin(end, static_cast<int>(snippet.length()));
+    QString out;
+    out += snippet.left(start).toHtmlEscaped();
+    out += "<span style='background-color:#e1bee7; color:#6a1b9a; font-weight:bold;'>";
+    out += snippet.mid(start, end - start).toHtmlEscaped();
+    out += "</span>";
+    out += snippet.mid(end).toHtmlEscaped();
+    return out;
 }
 
 QString FolderBrowserDialog::highlightMatches(const QString &path, const QString &query)
@@ -994,21 +1440,15 @@ void FolderBrowserDialog::setRootPath(const QString &path)
     saveSettings();
 }
 
-void FolderBrowserDialog::triggerSearch()
-{
-    if (!m_lastSearchQuery.isEmpty()) {
-        m_searchWorker->search(m_lastSearchQuery, m_rootPath);
-    }
-}
-
 QString FolderBrowserDialog::resolvedPath() const
 {
-    // If search results are visible, use the selected result
+    // If search results are visible, use the selected result. Accept both
+    // files and folders here — file rows arrived after the lift.
     if (m_viewStack->currentWidget() == m_searchResultsList) {
         QListWidgetItem *current = m_searchResultsList->currentItem();
         if (current) {
             QString path = current->data(Qt::UserRole).toString();
-            if (!path.isEmpty() && QDir(path).exists()) {
+            if (!path.isEmpty() && QFileInfo(path).exists()) {
                 return path;
             }
         }
@@ -1040,7 +1480,12 @@ QString FolderBrowserDialog::resolvedPath() const
 void FolderBrowserDialog::updateResolvedPathLabel()
 {
     QString path = resolvedPath();
-    m_resolvedPathLabel->setText(tr("Will open: %1").arg(path));
+    if (m_selectedLineNumber > 0 && !path.isEmpty()) {
+        m_resolvedPathLabel->setText(
+            tr("Will open: %1:%2").arg(path).arg(m_selectedLineNumber));
+    } else {
+        m_resolvedPathLabel->setText(tr("Will open: %1").arg(path));
+    }
 }
 
 void FolderBrowserDialog::saveSettings()
@@ -1048,6 +1493,15 @@ void FolderBrowserDialog::saveSettings()
     QSettings settings("Maude", "FolderBrowser");
     settings.setValue("rootPath", m_rootPath);
     settings.setValue("showHidden", m_showHidden);
+
+    QString modeStr;
+    switch (m_searchMode) {
+        case SearchMode::Folders: modeStr = "folders"; break;
+        case SearchMode::Files:   modeStr = "files"; break;
+        case SearchMode::Both:    modeStr = "both"; break;
+    }
+    settings.setValue("searchMode", modeStr);
+    if (m_contentRegex) settings.setValue("contentRegex", m_contentRegex->isChecked());
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,9 +1697,27 @@ void FolderBrowserDialog::loadSettings()
     }
     m_pathSelector->fileSystemAdapter()->setShowHidden(m_showHidden);
     m_searchWorker->setIncludeHidden(m_showHidden);
+    if (m_fileSearchWorker) m_fileSearchWorker->setIncludeHidden(m_showHidden);
     // Note: deliberately do NOT call PathCacheManager::setShowHidden — the
     // cache always indexes hidden, so the call would be a no-op anyway,
     // but we drop it for clarity.
+
+    // Restore search mode. Default is "both".
+    const QString modeStr = settings.value("searchMode", "both").toString();
+    if (modeStr == "folders") {
+        m_searchMode = SearchMode::Folders;
+        if (m_modeFolders) m_modeFolders->setChecked(true);
+    } else if (modeStr == "files") {
+        m_searchMode = SearchMode::Files;
+        if (m_modeFiles) m_modeFiles->setChecked(true);
+    } else {
+        m_searchMode = SearchMode::Both;
+        if (m_modeBoth) m_modeBoth->setChecked(true);
+    }
+
+    if (m_contentRegex) {
+        m_contentRegex->setChecked(settings.value("contentRegex", false).toBool());
+    }
 
     // Update PathSelector
     m_pathSelector->setPath(m_rootPath);

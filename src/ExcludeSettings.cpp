@@ -10,10 +10,10 @@
 // here we use QSettings' default location. Same on-disk INI format.
 //
 // Threading: all member access is guarded by m_lock.
-// PathCacheManager::scanWorker() calls shouldExclude() concurrently from
-// N worker threads; the user can simultaneously mutate the patterns via
-// ExcludeSettingsDialog on the main thread. Without locking, QSet
-// iteration in shouldExclude() crashed.
+// PathCacheManager::scanWorker() calls shouldExclude()/shouldExcludeFile()
+// concurrently from N worker threads; the user can simultaneously mutate the
+// patterns via ExcludeSettingsDialog on the main thread. Without locking,
+// QSet iteration crashed (2026-05-18 incident).
 //
 // Pattern: writers take a QWriteLocker (exclusive); readers take a
 // QReadLocker (shared). Both RAII-release on scope exit.
@@ -23,6 +23,10 @@ ExcludeSettings::ExcludeSettings(QObject *parent)
 {
     load();
 }
+
+// ============================================================================
+// Folder patterns
+// ============================================================================
 
 QStringList ExcludeSettings::allPatterns() const
 {
@@ -105,12 +109,24 @@ void ExcludeSettings::setPatternEnabled(const QString &pattern, bool enabled)
     }
 }
 
+bool ExcludeSettings::matchesGlob(const QString &lowerName, const QString &lowerPattern)
+{
+    if (lowerPattern.contains('*')) {
+        if (lowerPattern.startsWith('*') && lowerPattern.endsWith('*')) {
+            QString mid = lowerPattern.mid(1, lowerPattern.length() - 2);
+            return lowerName.contains(mid);
+        } else if (lowerPattern.startsWith('*')) {
+            return lowerName.endsWith(lowerPattern.mid(1));
+        } else if (lowerPattern.endsWith('*')) {
+            return lowerName.startsWith(lowerPattern.left(lowerPattern.length() - 1));
+        }
+        return false;
+    }
+    return lowerName == lowerPattern;
+}
+
 bool ExcludeSettings::shouldExclude(const QString &folderName) const
 {
-    // Snapshot the enabled patterns under the read lock, then iterate
-    // outside it. This minimises contention (the inside-lock work is just
-    // a copy of QSet, ~10-20 elements; case-insensitive comparison runs
-    // outside the lock).
     QSet<QString> snapshot;
     {
         QReadLocker locker(&m_lock);
@@ -118,24 +134,8 @@ bool ExcludeSettings::shouldExclude(const QString &folderName) const
     }
 
     const QString lowerName = folderName.toLower();
-
     for (const QString &pattern : snapshot) {
-        QString lowerPattern = pattern.toLower();
-
-        if (lowerPattern.contains('*')) {
-            if (lowerPattern.startsWith('*') && lowerPattern.endsWith('*')) {
-                QString mid = lowerPattern.mid(1, lowerPattern.length() - 2);
-                if (lowerName.contains(mid)) return true;
-            } else if (lowerPattern.startsWith('*')) {
-                QString suffix = lowerPattern.mid(1);
-                if (lowerName.endsWith(suffix)) return true;
-            } else if (lowerPattern.endsWith('*')) {
-                QString prefix = lowerPattern.left(lowerPattern.length() - 1);
-                if (lowerName.startsWith(prefix)) return true;
-            }
-        } else {
-            if (lowerName == lowerPattern) return true;
-        }
+        if (matchesGlob(lowerName, pattern.toLower())) return true;
     }
     return false;
 }
@@ -178,13 +178,157 @@ QStringList ExcludeSettings::defaultPatterns()
     };
 }
 
+// ============================================================================
+// File patterns
+// ============================================================================
+
+QStringList ExcludeSettings::allFilePatterns() const
+{
+    QReadLocker locker(&m_lock);
+    return m_filePatterns;
+}
+
+QStringList ExcludeSettings::enabledFilePatterns() const
+{
+    QReadLocker locker(&m_lock);
+    QStringList enabled;
+    for (const QString &pattern : m_filePatterns) {
+        if (m_enabledFilePatterns.contains(pattern)) {
+            enabled.append(pattern);
+        }
+    }
+    return enabled;
+}
+
+bool ExcludeSettings::isFilePatternEnabled(const QString &pattern) const
+{
+    QReadLocker locker(&m_lock);
+    return m_enabledFilePatterns.contains(pattern);
+}
+
+void ExcludeSettings::addFilePattern(const QString &pattern)
+{
+    QString trimmed = pattern.trimmed();
+    bool changed = false;
+    {
+        QWriteLocker locker(&m_lock);
+        if (trimmed.isEmpty() || m_filePatterns.contains(trimmed)) {
+            return;
+        }
+        m_filePatterns.append(trimmed);
+        m_enabledFilePatterns.insert(trimmed);
+        changed = true;
+    }
+    if (changed) {
+        save();
+        emit filePatternsChanged();
+    }
+}
+
+void ExcludeSettings::removeFilePattern(const QString &pattern)
+{
+    bool changed = false;
+    {
+        QWriteLocker locker(&m_lock);
+        if (m_filePatterns.removeOne(pattern)) {
+            m_enabledFilePatterns.remove(pattern);
+            changed = true;
+        }
+    }
+    if (changed) {
+        save();
+        emit filePatternsChanged();
+    }
+}
+
+void ExcludeSettings::setFilePatternEnabled(const QString &pattern, bool enabled)
+{
+    bool changed = false;
+    {
+        QWriteLocker locker(&m_lock);
+        if (!m_filePatterns.contains(pattern)) {
+            return;
+        }
+        if (enabled && !m_enabledFilePatterns.contains(pattern)) {
+            m_enabledFilePatterns.insert(pattern);
+            changed = true;
+        } else if (!enabled && m_enabledFilePatterns.contains(pattern)) {
+            m_enabledFilePatterns.remove(pattern);
+            changed = true;
+        }
+    }
+    if (changed) {
+        save();
+        emit filePatternsChanged();
+    }
+}
+
+bool ExcludeSettings::shouldExcludeFile(const QString &fileName) const
+{
+    QSet<QString> snapshot;
+    {
+        QReadLocker locker(&m_lock);
+        snapshot = m_enabledFilePatterns;
+    }
+
+    const QString lowerName = fileName.toLower();
+    for (const QString &pattern : snapshot) {
+        if (matchesGlob(lowerName, pattern.toLower())) return true;
+    }
+    return false;
+}
+
+void ExcludeSettings::resetFilePatternsToDefaults()
+{
+    {
+        QWriteLocker locker(&m_lock);
+        m_filePatterns = defaultFilePatterns();
+        m_enabledFilePatterns.clear();
+        for (const QString &pattern : m_filePatterns) {
+            m_enabledFilePatterns.insert(pattern);
+        }
+    }
+    save();
+    emit filePatternsChanged();
+}
+
+QStringList ExcludeSettings::defaultFilePatterns()
+{
+    return QStringList{
+        ".DS_Store",
+        ".localized",
+        "Thumbs.db",
+        "desktop.ini",
+        "*~",
+        "*.swp",
+        "*.swo",
+        "*.pyc",
+        "*.pyo",
+        "*.class",
+        "*.o",
+        "*.a"
+    };
+}
+
+// ============================================================================
+// Persistence
+// ============================================================================
+
 void ExcludeSettings::load()
 {
     QSettings settings;
     settings.beginGroup("ExcludeSettings");
 
     QWriteLocker locker(&m_lock);
-    if (settings.contains("patterns")) {
+
+    // Folder patterns. Prefer the new key; fall back to legacy `patterns` for
+    // one-release migration. Default if neither key exists.
+    if (settings.contains("folderPatterns")) {
+        m_patterns = settings.value("folderPatterns").toStringList();
+        QStringList enabled = settings.value("enabledFolderPatterns").toStringList();
+        m_enabledPatterns = QSet<QString>(enabled.begin(), enabled.end());
+    } else if (settings.contains("patterns")) {
+        // Legacy migration path.
         m_patterns = settings.value("patterns").toStringList();
         QStringList enabled = settings.value("enabledPatterns").toStringList();
         m_enabledPatterns = QSet<QString>(enabled.begin(), enabled.end());
@@ -194,25 +338,48 @@ void ExcludeSettings::load()
             m_enabledPatterns.insert(pattern);
         }
     }
+
+    // File patterns. New in file-search v1; default if missing.
+    if (settings.contains("filePatterns")) {
+        m_filePatterns = settings.value("filePatterns").toStringList();
+        QStringList enabled = settings.value("enabledFilePatterns").toStringList();
+        m_enabledFilePatterns = QSet<QString>(enabled.begin(), enabled.end());
+    } else {
+        m_filePatterns = defaultFilePatterns();
+        for (const QString &pattern : m_filePatterns) {
+            m_enabledFilePatterns.insert(pattern);
+        }
+    }
+
     settings.endGroup();
 }
 
 void ExcludeSettings::save()
 {
     // Snapshot under read lock, then write to QSettings outside the lock.
-    // (QSettings is itself thread-safe.)
-    QStringList patternsCopy;
-    QStringList enabledCopy;
+    QStringList folderPatternsCopy;
+    QStringList enabledFolderCopy;
+    QStringList filePatternsCopy;
+    QStringList enabledFileCopy;
     {
         QReadLocker locker(&m_lock);
-        patternsCopy = m_patterns;
-        enabledCopy = QStringList(m_enabledPatterns.begin(), m_enabledPatterns.end());
+        folderPatternsCopy = m_patterns;
+        enabledFolderCopy = QStringList(m_enabledPatterns.begin(), m_enabledPatterns.end());
+        filePatternsCopy = m_filePatterns;
+        enabledFileCopy = QStringList(m_enabledFilePatterns.begin(), m_enabledFilePatterns.end());
     }
 
     QSettings settings;
     settings.beginGroup("ExcludeSettings");
-    settings.setValue("patterns", patternsCopy);
-    settings.setValue("enabledPatterns", enabledCopy);
+    settings.setValue("folderPatterns", folderPatternsCopy);
+    settings.setValue("enabledFolderPatterns", enabledFolderCopy);
+    settings.setValue("filePatterns", filePatternsCopy);
+    settings.setValue("enabledFilePatterns", enabledFileCopy);
+
+    // Legacy aliases — keep for one release so a downgrade still finds folder rules.
+    settings.setValue("patterns", folderPatternsCopy);
+    settings.setValue("enabledPatterns", enabledFolderCopy);
+
     settings.endGroup();
     settings.sync();
 }

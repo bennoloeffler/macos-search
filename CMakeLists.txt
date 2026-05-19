@@ -36,14 +36,24 @@ enable_testing()
 set(MACOS_SEARCH_LIB_SOURCES
     src/PathCacheManager.cpp
     src/PathCacheManager.h
+    src/FileCacheManager.cpp
+    src/FileCacheManager.h
     src/FolderSearchWorker.cpp
     src/FolderSearchWorker.h
+    src/FileSearchWorker.cpp
+    src/FileSearchWorker.h
     src/SearchField.cpp
     src/SearchField.h
     src/ExcludeSettings.cpp
     src/ExcludeSettings.h
     src/ExcludeSettingsDialog.cpp
     src/ExcludeSettingsDialog.h
+    src/ContentSearchSettings.cpp
+    src/ContentSearchSettings.h
+    src/RipgrepRunner.cpp
+    src/RipgrepRunner.h
+    src/EditorLauncher.cpp
+    src/EditorLauncher.h
     src/MaudeConfig.cpp
     src/MaudeConfig.h
     src/ThemeManager.cpp
@@ -115,6 +125,31 @@ set_target_properties(macos-search PROPERTIES
 )
 
 # ---------------------------------------------------------------------------
+# Bundle the vendored ripgrep binary into Contents/Resources/rg (if present)
+# ---------------------------------------------------------------------------
+# The runtime falls back to system `rg` when the bundled copy is missing
+# (see RipgrepRunner::findBinary), so this step is optional. To refresh,
+# see third_party/rg/README.md.
+if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "arm64")
+    set(_RG_VENDOR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rg/macos-arm64/rg")
+else()
+    set(_RG_VENDOR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rg/macos-x86_64/rg")
+endif()
+if(EXISTS "${_RG_VENDOR}")
+    add_custom_command(TARGET macos-search POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${_RG_VENDOR}"
+                "$<TARGET_BUNDLE_DIR:macos-search>/Contents/Resources/rg"
+        COMMAND chmod +x "$<TARGET_BUNDLE_DIR:macos-search>/Contents/Resources/rg"
+        COMMAND codesign --sign - --force "$<TARGET_BUNDLE_DIR:macos-search>/Contents/Resources/rg" || true
+        COMMENT "Bundling ripgrep -> Contents/Resources/rg"
+        VERBATIM
+    )
+else()
+    message(STATUS "third_party/rg binary missing — bundle will rely on system rg at runtime.")
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 set(MACOS_SEARCH_TEST_SOURCES
@@ -141,6 +176,22 @@ set(MACOS_SEARCH_TEST_SOURCES
     tests/GlobalHotkeyTest.h
     tests/PreferencesDialogTest.cpp
     tests/PreferencesDialogTest.h
+    tests/FileCacheManagerTest.cpp
+    tests/FileCacheManagerTest.h
+    tests/FileSearchWorkerTest.cpp
+    tests/FileSearchWorkerTest.h
+    tests/ContentSearchSettingsTest.cpp
+    tests/ContentSearchSettingsTest.h
+    tests/RipgrepRunnerTest.cpp
+    tests/RipgrepRunnerTest.h
+    tests/EditorLauncherTest.cpp
+    tests/EditorLauncherTest.h
+    tests/FileSearchIntegrationTest.cpp
+    tests/FileSearchIntegrationTest.h
+    tests/FileSearchUiTest.cpp
+    tests/FileSearchUiTest.h
+    tests/ContentSearchE2ETest.cpp
+    tests/ContentSearchE2ETest.h
     ${MACOS_SEARCH_LIB_SOURCES}
     assets/icons.qrc
 )

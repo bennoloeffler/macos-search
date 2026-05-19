@@ -319,3 +319,211 @@ void ExcludeSettingsTest::testPatternsChangedEmittedOnReset()
 
     QCOMPARE(spy.count(), 1);
 }
+
+// =====================================================================
+// File-pattern tests (file-search v1)
+// =====================================================================
+
+void ExcludeSettingsTest::testDefaultFilePatternsNotEmpty()
+{
+    QVERIFY(!ExcludeSettings::defaultFilePatterns().isEmpty());
+}
+
+void ExcludeSettingsTest::testDefaultFilePatternsContainsDsStore()
+{
+    QVERIFY(ExcludeSettings::defaultFilePatterns().contains(".DS_Store"));
+}
+
+void ExcludeSettingsTest::testDefaultFilePatternsContainsPyc()
+{
+    QVERIFY(ExcludeSettings::defaultFilePatterns().contains("*.pyc"));
+}
+
+void ExcludeSettingsTest::testFilePatternsLoadDefaultsOnFreshConfig()
+{
+    ExcludeSettings settings;
+    QStringList all = settings.allFilePatterns();
+    QVERIFY(all.contains(".DS_Store"));
+    QVERIFY(all.contains("*.pyc"));
+}
+
+void ExcludeSettingsTest::testAddFilePatternAddsAndEnables()
+{
+    ExcludeSettings settings;
+    int initial = settings.allFilePatterns().size();
+    settings.addFilePattern("*.bak");
+    QCOMPARE(settings.allFilePatterns().size(), initial + 1);
+    QVERIFY(settings.isFilePatternEnabled("*.bak"));
+}
+
+void ExcludeSettingsTest::testAddFilePatternIgnoresEmpty()
+{
+    ExcludeSettings settings;
+    int initial = settings.allFilePatterns().size();
+    settings.addFilePattern("");
+    settings.addFilePattern("   ");
+    QCOMPARE(settings.allFilePatterns().size(), initial);
+}
+
+void ExcludeSettingsTest::testAddFilePatternIgnoresDuplicates()
+{
+    ExcludeSettings settings;
+    int initial = settings.allFilePatterns().size();
+    settings.addFilePattern(".DS_Store");
+    QCOMPARE(settings.allFilePatterns().size(), initial);
+}
+
+void ExcludeSettingsTest::testRemoveFilePatternRemoves()
+{
+    ExcludeSettings settings;
+    QVERIFY(settings.allFilePatterns().contains(".DS_Store"));
+    settings.removeFilePattern(".DS_Store");
+    QVERIFY(!settings.allFilePatterns().contains(".DS_Store"));
+}
+
+void ExcludeSettingsTest::testSetFilePatternEnabledToggles()
+{
+    ExcludeSettings settings;
+    settings.setFilePatternEnabled(".DS_Store", false);
+    QVERIFY(!settings.isFilePatternEnabled(".DS_Store"));
+    settings.setFilePatternEnabled(".DS_Store", true);
+    QVERIFY(settings.isFilePatternEnabled(".DS_Store"));
+}
+
+void ExcludeSettingsTest::testShouldExcludeFileExactMatch()
+{
+    ExcludeSettings settings;
+    QVERIFY(settings.shouldExcludeFile(".DS_Store"));
+}
+
+void ExcludeSettingsTest::testShouldExcludeFileWildcardSuffix()
+{
+    ExcludeSettings settings;
+    QVERIFY(settings.shouldExcludeFile("foo.pyc"));
+    QVERIFY(settings.shouldExcludeFile("module.class"));
+    QVERIFY(!settings.shouldExcludeFile("foo.py"));
+}
+
+void ExcludeSettingsTest::testShouldExcludeFileCaseInsensitive()
+{
+    ExcludeSettings settings;
+    QVERIFY(settings.shouldExcludeFile(".ds_store"));
+    QVERIFY(settings.shouldExcludeFile("FOO.PYC"));
+}
+
+void ExcludeSettingsTest::testShouldExcludeFileRespectsDisabled()
+{
+    ExcludeSettings settings;
+    settings.setFilePatternEnabled(".DS_Store", false);
+    QVERIFY(!settings.shouldExcludeFile(".DS_Store"));
+}
+
+void ExcludeSettingsTest::testResetFilePatternsRestores()
+{
+    ExcludeSettings settings;
+    settings.removeFilePattern(".DS_Store");
+    settings.addFilePattern("custom");
+    QVERIFY(!settings.allFilePatterns().contains(".DS_Store"));
+
+    settings.resetFilePatternsToDefaults();
+
+    QVERIFY(settings.allFilePatterns().contains(".DS_Store"));
+    QVERIFY(!settings.allFilePatterns().contains("custom"));
+}
+
+void ExcludeSettingsTest::testFilePatternsChangedSignalEmitted()
+{
+    ExcludeSettings settings;
+    QSignalSpy spy(&settings, &ExcludeSettings::filePatternsChanged);
+    settings.addFilePattern("foo");
+    QCOMPARE(spy.count(), 1);
+    settings.setFilePatternEnabled("foo", false);
+    QCOMPARE(spy.count(), 2);
+    settings.removeFilePattern("foo");
+    QCOMPARE(spy.count(), 3);
+}
+
+void ExcludeSettingsTest::testFolderAndFilePatternsAreIndependent()
+{
+    ExcludeSettings settings;
+    // node_modules is a folder pattern.
+    QVERIFY(settings.shouldExclude("node_modules"));
+    QVERIFY(!settings.shouldExcludeFile("node_modules"));
+    // .DS_Store is a file pattern.
+    QVERIFY(!settings.shouldExclude(".DS_Store"));
+    QVERIFY(settings.shouldExcludeFile(".DS_Store"));
+}
+
+// =====================================================================
+// INI migration tests
+// =====================================================================
+
+void ExcludeSettingsTest::testLegacyPatternsMigratedToFolderPatterns()
+{
+    // Seed legacy keys directly.
+    clearSettings();
+    {
+        QSettings s;
+        s.beginGroup("ExcludeSettings");
+        s.setValue("patterns", QStringList{ "node_modules", ".git", "custom_legacy" });
+        s.setValue("enabledPatterns", QStringList{ "node_modules", ".git" });
+        s.endGroup();
+        s.sync();
+    }
+
+    ExcludeSettings settings;
+    QVERIFY(settings.allPatterns().contains("custom_legacy"));
+    QVERIFY(settings.isPatternEnabled("node_modules"));
+    QVERIFY(settings.isPatternEnabled(".git"));
+    QVERIFY(!settings.isPatternEnabled("custom_legacy"));
+}
+
+void ExcludeSettingsTest::testLegacyAliasKeptForOneRelease()
+{
+    // After save we should write both `folderPatterns` and `patterns`.
+    {
+        ExcludeSettings settings;
+        settings.addPattern("alias_test");
+    }
+    QSettings s;
+    s.beginGroup("ExcludeSettings");
+    QStringList legacy = s.value("patterns").toStringList();
+    QStringList modern = s.value("folderPatterns").toStringList();
+    s.endGroup();
+    QVERIFY(legacy.contains("alias_test"));
+    QVERIFY(modern.contains("alias_test"));
+}
+
+void ExcludeSettingsTest::testNewFolderPatternsKeyTakesPriorityOverLegacy()
+{
+    clearSettings();
+    {
+        QSettings s;
+        s.beginGroup("ExcludeSettings");
+        s.setValue("patterns", QStringList{ "old_pattern" });
+        s.setValue("enabledPatterns", QStringList{ "old_pattern" });
+        s.setValue("folderPatterns", QStringList{ "new_pattern" });
+        s.setValue("enabledFolderPatterns", QStringList{ "new_pattern" });
+        s.endGroup();
+        s.sync();
+    }
+    ExcludeSettings settings;
+    QVERIFY(settings.allPatterns().contains("new_pattern"));
+    QVERIFY(!settings.allPatterns().contains("old_pattern"));
+}
+
+void ExcludeSettingsTest::testFilePatternsLoadFreshDefaultsWhenAbsent()
+{
+    clearSettings();
+    {
+        QSettings s;
+        s.beginGroup("ExcludeSettings");
+        s.setValue("folderPatterns", QStringList{ "node_modules" });
+        s.setValue("enabledFolderPatterns", QStringList{ "node_modules" });
+        // Intentionally omit filePatterns.
+        s.endGroup();
+        s.sync();
+    }
+    ExcludeSettings settings;
+    QVERIFY(settings.allFilePatterns().contains(".DS_Store"));
+}

@@ -24,6 +24,14 @@
 #include "AutostartTest.h"
 #include "GlobalHotkeyTest.h"
 #include "PreferencesDialogTest.h"
+#include "FileCacheManagerTest.h"
+#include "FileSearchWorkerTest.h"
+#include "ContentSearchSettingsTest.h"
+#include "RipgrepRunnerTest.h"
+#include "EditorLauncherTest.h"
+#include "FileSearchIntegrationTest.h"
+#include "FileSearchUiTest.h"
+#include "ContentSearchE2ETest.h"
 
 #define RUN_TEST(TestClass, varName) \
     if (testFilter.isEmpty() || QString(#TestClass) == testFilter) \
@@ -72,6 +80,14 @@ int main(int argc, char *argv[])
     RUN_TEST(AutostartTest, t9);
     RUN_TEST(GlobalHotkeyTest, t10);
     RUN_TEST(PreferencesDialogTest, t11);
+    RUN_TEST(FileCacheManagerTest, t12);
+    RUN_TEST(FileSearchWorkerTest, t13);
+    RUN_TEST(ContentSearchSettingsTest, t14);
+    RUN_TEST(RipgrepRunnerTest, t15);
+    RUN_TEST(EditorLauncherTest, t16);
+    RUN_TEST(FileSearchIntegrationTest, t17);
+    RUN_TEST(FileSearchUiTest, t18);
+    RUN_TEST(ContentSearchE2ETest, t19);
 
     return status;
 }

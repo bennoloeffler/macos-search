@@ -53,6 +53,30 @@ private slots:
     void testPatternsChangedEmittedOnEnable();
     void testPatternsChangedEmittedOnReset();
 
+    // File-pattern tests (file-search v1)
+    void testDefaultFilePatternsNotEmpty();
+    void testDefaultFilePatternsContainsDsStore();
+    void testDefaultFilePatternsContainsPyc();
+    void testFilePatternsLoadDefaultsOnFreshConfig();
+    void testAddFilePatternAddsAndEnables();
+    void testAddFilePatternIgnoresEmpty();
+    void testAddFilePatternIgnoresDuplicates();
+    void testRemoveFilePatternRemoves();
+    void testSetFilePatternEnabledToggles();
+    void testShouldExcludeFileExactMatch();
+    void testShouldExcludeFileWildcardSuffix();
+    void testShouldExcludeFileCaseInsensitive();
+    void testShouldExcludeFileRespectsDisabled();
+    void testResetFilePatternsRestores();
+    void testFilePatternsChangedSignalEmitted();
+    void testFolderAndFilePatternsAreIndependent();
+
+    // INI migration tests
+    void testLegacyPatternsMigratedToFolderPatterns();
+    void testLegacyAliasKeptForOneRelease();
+    void testNewFolderPatternsKeyTakesPriorityOverLegacy();
+    void testFilePatternsLoadFreshDefaultsWhenAbsent();
+
 private:
     void clearSettings();
 };

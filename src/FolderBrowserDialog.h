@@ -14,16 +14,23 @@ class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QStackedWidget;
+class QCheckBox;
 class FolderSearchWorker;
+class FileSearchWorker;
 class ExcludeSettings;
+class ContentSearchSettings;
+class RipgrepRunner;
 class PathSelector;
 class GlobalHotkey;
+struct ContentMatch;
 
 class FolderBrowserDialog : public QDialog
 {
     Q_OBJECT
 
 public:
+    enum class SearchMode { Folders, Files, Both };
+
     explicit FolderBrowserDialog(const QString &initialDir, QWidget *parent = nullptr);
     ~FolderBrowserDialog() override;
 
@@ -33,54 +40,48 @@ public:
                                         const QString &caption,
                                         const QString &dir);
 
-    /// Resolves the persisted default favorite (or Home as fallback) to
-    /// a usable startup path. Public so main.cpp and tests can call it
-    /// without instantiating a dialog.
     static QString resolveDefaultStartPath();
+
+    // Public for tests.
+    SearchMode searchMode() const { return m_searchMode; }
+    void setSearchMode(SearchMode m);
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     bool eventFilter(QObject *obj, QEvent *event) override;
 
 public slots:
-    /// Standalone-app drift: navigate the picker to a specific path.
-    /// Used by tests and by the favorites sidebar; exposed as a slot so
-    /// QMetaObject::invokeMethod works.
     void setCurrentRoot(const QString &path);
-
-    /// Summon the dialog: show + raise + activate, then focus the search
-    /// field and selectAll so the next keystroke replaces the previous
-    /// query. Used by the global ⌃⌥⇧S hotkey (see src/GlobalHotkey.h).
-    /// Idempotent — calling while already focused is a no-op aside from
-    /// the selectAll().
     void summon();
-
-    /// Hand the GlobalHotkey instance to the dialog so the Preferences
-    /// dialog (TODO 7) can flip the chord live. Set from main.cpp after
-    /// constructing both. nullptr means "no live hotkey wiring".
     void setGlobalHotkey(GlobalHotkey *hotkey);
 
 signals:
-    /// Emitted when the Preferences dialog toggles the hotkey checkbox.
-    /// main.cpp listens and forwards to GlobalHotkey::register/unregister.
     void hotkeyPreferenceChanged(bool enabled);
 
 private slots:
     void onFolderClicked(const QModelIndex &index);
     void onFolderDoubleClicked(const QModelIndex &index);
-    void onChooseClicked();          // legacy — kept for keyPress dispatch
-    void onOpenInFinderClicked();    // standalone-app drift: reveal in Finder
-    void onOpenInAppClicked();       // standalone-app drift: open with default app
+    void onChooseClicked();
+    void onOpenInFinderClicked();
+    void onOpenInAppClicked();
     void onUpClicked();
     void onHomeClicked();
     void onSearchTextChanged(const QString &text);
     void onSearchResultsReady(const QList<SearchResult> &results);
+    void onFileSearchResultsReady(const QList<SearchResult> &results);
     void onSearchResultClicked(QListWidgetItem *item);
     void onSearchResultDoubleClicked(QListWidgetItem *item);
     void onExcludeButtonClicked();
     void onShowHiddenToggled(bool checked);
     void onCacheStatusChanged();
+    void onFileCapReached();
     void onPathSelectorChanged(const QString &path);
+    void onSearchModeChanged();
+    void onContentTextChanged(const QString &text);
+    void onContentRegexToggled(bool on);
+    void onContentHelpClicked();
+    void onContentMatches(const QList<ContentMatch> &matches);
+    void onContentFinished(int total);
 
 private:
     void setupUi();
@@ -90,10 +91,15 @@ private:
     void updateResolvedPathLabel();
     void setRootPath(const QString &path);
     void triggerSearch();
+    void triggerContentSearch();
+    void rebuildMergedResults();
+    void updateContentFieldState();
     QString resolvedPath() const;
     void saveSettings();
     void loadSettings();
     QString highlightMatches(const QString &path, const QString &query);
+    QString highlightSnippet(const QString &snippet, int start, int end);
+    QString extensionChipHtml(const QString &path);
 
     QVBoxLayout *m_mainLayout = nullptr;
     QLabel *m_titleLabel = nullptr;
@@ -109,17 +115,24 @@ private:
     QLabel *m_cacheStatusLabel = nullptr;
     bool m_showHidden = false;
 
-    // Standalone-app drift: Finder-style sidebar of favorite roots.
-    //   - Home is always present and is the implicit fallback default.
-    //   - User-added favorites persist as QStringList "favorites".
-    //   - One favorite (Home or user-added) can be marked the default —
-    //     that's the path used at app startup.
-    //   - Right-click on a row opens a mini context menu: "Make Default"
-    //     and "Delete" (Delete hidden for Home).
+    // Mode toggle (Folders / Files / Both)
+    QPushButton *m_modeFolders = nullptr;
+    QPushButton *m_modeFiles = nullptr;
+    QPushButton *m_modeBoth = nullptr;
+    SearchMode m_searchMode = SearchMode::Both;
+
+    // Content-search row (visible all the time, gated by threshold).
+    QWidget *m_contentContainer = nullptr;
+    QLineEdit *m_contentField = nullptr;
+    QCheckBox *m_contentRegex = nullptr;
+    QPushButton *m_contentHelpButton = nullptr;
+    QLabel *m_contentHintLabel = nullptr;
+
+    // Favorites sidebar
     QListWidget *m_favoritesList = nullptr;
     QPushButton *m_addFavoriteButton = nullptr;
-    QStringList m_favoritePaths;       // persisted list of user-added paths
-    QString m_defaultFavorite;         // empty → Home is default
+    QStringList m_favoritePaths;
+    QString m_defaultFavorite;
     void loadFavorites();
     void saveFavorites();
     void rebuildFavoritesList();
@@ -128,14 +141,13 @@ private:
     void setDefaultFavorite(const QString &path);
     void onFavoriteRowActivated(QListWidgetItem *item);
     void onFavoritesContextMenu(const QPoint &pos);
-    // (resolveDefaultStartPath is declared in the public: block above)
 
-    // Root path UI (PathSelector handles all completion logic)
+    // Root path
     QWidget *m_rootContainer = nullptr;
     PathSelector *m_pathSelector = nullptr;
-    QString m_rootPath; // Last confirmed valid path (for search scope)
+    QString m_rootPath;
 
-    // View stack (tree view or search results)
+    // View stack
     QStackedWidget *m_viewStack = nullptr;
     QTreeView *m_folderTreeView = nullptr;
     QListWidget *m_searchResultsList = nullptr;
@@ -143,30 +155,36 @@ private:
     // Resolved path preview
     QLabel *m_resolvedPathLabel = nullptr;
 
-    // Standalone-app drift: single "Choose" → two "Open" buttons.
     QPushButton *m_openInFinderButton = nullptr;
     QPushButton *m_openInAppButton = nullptr;
-    QPushButton *m_chooseButton = nullptr; // alias of m_openInAppButton
+    QPushButton *m_chooseButton = nullptr;
     QPushButton *m_cancelButton = nullptr;
     QFileSystemModel *m_fileSystemModel = nullptr;
 
-    // Search worker
+    // Search workers
     FolderSearchWorker *m_searchWorker = nullptr;
+    FileSearchWorker *m_fileSearchWorker = nullptr;
     ExcludeSettings *m_excludeSettings = nullptr;
+
+    // Content search
+    ContentSearchSettings *m_contentSettings = nullptr;
+    RipgrepRunner *m_ripgrep = nullptr;
+
     QString m_lastSearchQuery;
+    QList<SearchResult> m_lastFolderResults;
+    QList<SearchResult> m_lastFileResults;
+    // Map from file path → list of (line, snippet, matchStart, matchEnd).
+    QMap<QString, QList<ContentMatch>> m_contentMatchesByFile;
+    int m_contentMatchTotal = 0;
+    bool m_contentBusy = false;
+    // The line number selected via a content-match child row (or 0 if none).
+    int m_selectedLineNumber = 0;
 
     QString m_currentPath;
     QString m_selectedPath;
 
-    // Optional handle to the global hotkey, set from main.cpp. Used by
-    // the Preferences dialog (TODO 7) to flip the chord live.
     GlobalHotkey *m_globalHotkey = nullptr;
 
-    // Reentrancy guard for keyPressEvent's arrow-key forwarding. Qt
-    // propagates unaccepted KeyPress events up the parent chain, so a
-    // forwarded arrow that the target doesn't accept bubbles back into
-    // this dialog and would otherwise recurse until the stack guard
-    // page kills the process.
     bool m_inKeyForward = false;
 };
 

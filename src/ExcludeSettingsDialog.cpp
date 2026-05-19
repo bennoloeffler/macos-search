@@ -1,22 +1,23 @@
 #include "ExcludeSettingsDialog.h"
 #include "ExcludeSettings.h"
 #include "SwiftUIStyle.h"
-#include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPushButton>
-#include <QLineEdit>
-#include <QLabel>
+#include <QTabWidget>
+#include <QVBoxLayout>
 
 ExcludeSettingsDialog::ExcludeSettingsDialog(ExcludeSettings *settings, QWidget *parent)
     : QDialog(parent)
     , m_settings(settings)
 {
     setObjectName("ExcludeSettingsDialog");
-    setWindowTitle(tr("Exclude Folders"));
-    setMinimumSize(350, 400);
-    resize(400, 500);
+    setWindowTitle(tr("Exclude Patterns"));
+    setMinimumSize(420, 460);
+    resize(480, 560);
     setupUi();
     refreshList();
 }
@@ -25,6 +26,21 @@ void ExcludeSettingsDialog::updateHitCounts(const QMap<QString, int> &counts)
 {
     m_hitCounts = counts;
     refreshList();
+}
+
+ExcludeSettingsDialog::Scope ExcludeSettingsDialog::currentScope() const
+{
+    return m_tabs && m_tabs->currentIndex() == 1 ? Scope::Files : Scope::Folders;
+}
+
+void ExcludeSettingsDialog::setCurrentScope(Scope scope)
+{
+    if (m_tabs) m_tabs->setCurrentIndex(scope == Scope::Files ? 1 : 0);
+}
+
+QListWidget *ExcludeSettingsDialog::activeList() const
+{
+    return currentScope() == Scope::Files ? m_fileList : m_folderList;
 }
 
 void ExcludeSettingsDialog::setupUi()
@@ -36,14 +52,16 @@ void ExcludeSettingsDialog::setupUi()
                                     SwiftUIStyle::SpacingMedium,
                                     SwiftUIStyle::SpacingMedium);
 
-    // Title
     auto *titleLabel = new QLabel(tr("Exclude Patterns"), this);
     titleLabel->setObjectName("titleLabel");
     titleLabel->setFont(SwiftUIStyle::titleFont());
     mainLayout->addWidget(titleLabel);
 
-    // Hint
-    m_hintLabel = new QLabel(tr("Checked patterns will be excluded from search.\nUse * for wildcards (e.g., *.egg-info)"), this);
+    m_hintLabel = new QLabel(
+        tr("Folder patterns skip whole directories from the scan.\n"
+           "File patterns drop matching files from the file cache.\n"
+           "Use * for wildcards (e.g., *.bak)."),
+        this);
     m_hintLabel->setObjectName("hintLabel");
     m_hintLabel->setStyleSheet(QString("color: %1;").arg(SwiftUIStyle::secondaryTextColor()));
     QFont hintFont = m_hintLabel->font();
@@ -52,13 +70,21 @@ void ExcludeSettingsDialog::setupUi()
     m_hintLabel->setWordWrap(true);
     mainLayout->addWidget(m_hintLabel);
 
-    // Pattern list
-    m_patternList = new QListWidget(this);
-    m_patternList->setObjectName("patternList");
-    m_patternList->setStyleSheet(SwiftUIStyle::listStyleSheet());
-    mainLayout->addWidget(m_patternList);
+    m_tabs = new QTabWidget(this);
+    m_tabs->setObjectName("excludeTabs");
 
-    // Add pattern row
+    m_folderList = new QListWidget();
+    m_folderList->setObjectName("folderPatternList");
+    m_folderList->setStyleSheet(SwiftUIStyle::listStyleSheet());
+
+    m_fileList = new QListWidget();
+    m_fileList->setObjectName("filePatternList");
+    m_fileList->setStyleSheet(SwiftUIStyle::listStyleSheet());
+
+    m_tabs->addTab(m_folderList, tr("Folders"));
+    m_tabs->addTab(m_fileList, tr("Files"));
+    mainLayout->addWidget(m_tabs, 1);
+
     auto *addLayout = new QHBoxLayout();
     addLayout->setSpacing(SwiftUIStyle::SpacingSmall);
 
@@ -77,7 +103,6 @@ void ExcludeSettingsDialog::setupUi()
 
     mainLayout->addLayout(addLayout);
 
-    // Button row
     auto *buttonLayout = new QHBoxLayout();
     buttonLayout->setSpacing(SwiftUIStyle::SpacingSmall);
 
@@ -99,7 +124,6 @@ void ExcludeSettingsDialog::setupUi()
 
     mainLayout->addLayout(buttonLayout);
 
-    // Close button
     auto *closeLayout = new QHBoxLayout();
     closeLayout->addStretch();
 
@@ -112,8 +136,9 @@ void ExcludeSettingsDialog::setupUi()
 
     mainLayout->addLayout(closeLayout);
 
-    // Connections
-    connect(m_patternList, &QListWidget::itemChanged,
+    connect(m_folderList, &QListWidget::itemChanged,
+            this, &ExcludeSettingsDialog::onItemChanged);
+    connect(m_fileList, &QListWidget::itemChanged,
             this, &ExcludeSettingsDialog::onItemChanged);
     connect(m_addButton, &QPushButton::clicked,
             this, &ExcludeSettingsDialog::onAddClicked);
@@ -123,6 +148,8 @@ void ExcludeSettingsDialog::setupUi()
             this, &ExcludeSettingsDialog::onRemoveClicked);
     connect(m_resetButton, &QPushButton::clicked,
             this, &ExcludeSettingsDialog::onResetClicked);
+    connect(m_tabs, &QTabWidget::currentChanged,
+            this, &ExcludeSettingsDialog::onTabChanged);
     connect(closeButton, &QPushButton::clicked,
             this, &QDialog::accept);
 }
@@ -130,61 +157,85 @@ void ExcludeSettingsDialog::setupUi()
 void ExcludeSettingsDialog::refreshList()
 {
     m_updatingList = true;
-    m_patternList->clear();
+    m_folderList->clear();
+    m_fileList->clear();
 
-    QStringList patterns = m_settings->allPatterns();
-    for (const QString &pattern : patterns) {
-        auto *item = new QListWidgetItem(m_patternList);
-
-        // Show hit count if available
-        QString displayText = pattern;
-        if (m_hitCounts.contains(pattern) && m_hitCounts[pattern] > 0) {
-            displayText += QString(" (%1 excluded)").arg(m_hitCounts[pattern]);
+    auto fill = [this](QListWidget *list, const QStringList &patterns,
+                       auto enabledPred) {
+        for (const QString &pattern : patterns) {
+            auto *item = new QListWidgetItem(list);
+            QString displayText = pattern;
+            if (m_hitCounts.contains(pattern) && m_hitCounts[pattern] > 0) {
+                displayText += QString(" (%1 excluded)").arg(m_hitCounts[pattern]);
+            }
+            item->setText(displayText);
+            item->setData(Qt::UserRole, pattern);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState(enabledPred(pattern) ? Qt::Checked : Qt::Unchecked);
         }
+    };
 
-        item->setText(displayText);
-        item->setData(Qt::UserRole, pattern);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(m_settings->isPatternEnabled(pattern) ? Qt::Checked : Qt::Unchecked);
-    }
+    fill(m_folderList, m_settings->allPatterns(),
+         [this](const QString &p) { return m_settings->isPatternEnabled(p); });
+    fill(m_fileList, m_settings->allFilePatterns(),
+         [this](const QString &p) { return m_settings->isFilePatternEnabled(p); });
 
     m_updatingList = false;
 }
 
 void ExcludeSettingsDialog::onItemChanged(QListWidgetItem *item)
 {
-    if (m_updatingList || !item) {
-        return;
+    if (m_updatingList || !item) return;
+    const QString pattern = item->data(Qt::UserRole).toString();
+    const bool enabled = (item->checkState() == Qt::Checked);
+    if (currentScope() == Scope::Files) {
+        m_settings->setFilePatternEnabled(pattern, enabled);
+    } else {
+        m_settings->setPatternEnabled(pattern, enabled);
     }
-
-    QString pattern = item->data(Qt::UserRole).toString();
-    bool enabled = (item->checkState() == Qt::Checked);
-    m_settings->setPatternEnabled(pattern, enabled);
 }
 
 void ExcludeSettingsDialog::onAddClicked()
 {
-    QString pattern = m_addPatternEdit->text().trimmed();
-    if (!pattern.isEmpty()) {
+    const QString pattern = m_addPatternEdit->text().trimmed();
+    if (pattern.isEmpty()) return;
+    if (currentScope() == Scope::Files) {
+        m_settings->addFilePattern(pattern);
+    } else {
         m_settings->addPattern(pattern);
-        m_addPatternEdit->clear();
-        refreshList();
     }
+    m_addPatternEdit->clear();
+    refreshList();
 }
 
 void ExcludeSettingsDialog::onRemoveClicked()
 {
-    QListWidgetItem *item = m_patternList->currentItem();
-    if (item) {
-        QString pattern = item->data(Qt::UserRole).toString();
+    QListWidgetItem *item = activeList()->currentItem();
+    if (!item) return;
+    const QString pattern = item->data(Qt::UserRole).toString();
+    if (currentScope() == Scope::Files) {
+        m_settings->removeFilePattern(pattern);
+    } else {
         m_settings->removePattern(pattern);
-        refreshList();
     }
+    refreshList();
 }
 
 void ExcludeSettingsDialog::onResetClicked()
 {
-    m_settings->resetToDefaults();
+    if (currentScope() == Scope::Files) {
+        m_settings->resetFilePatternsToDefaults();
+    } else {
+        m_settings->resetToDefaults();
+    }
     m_hitCounts.clear();
     refreshList();
+}
+
+void ExcludeSettingsDialog::onTabChanged(int /*index*/)
+{
+    // Item-changed signals are sourced from whichever list the user clicks,
+    // so changing tabs doesn't need to rewire anything; just clear the entry
+    // field so it doesn't carry a folder pattern into the files tab.
+    m_addPatternEdit->clear();
 }

@@ -1,7 +1,9 @@
 #include "PathCacheManager.h"
 #include "ExcludeSettings.h"
+#include "FileCacheManager.h"
 #include <QDir>
 #include <QFileSystemWatcher>
+#include <QFileInfo>
 #include <QQueue>
 #include <QMetaObject>
 #include <QtConcurrent>
@@ -91,6 +93,8 @@ void PathCacheManager::rescan()
         m_pathSet.clear();
         m_completedRoots.clear();
     }
+    // The file cache is rebuilt by the same scan walks; clear it in lockstep.
+    FileCacheManager::instance()->clear();
     // Clear watcher
     QStringList watched = m_watcher->directories();
     if (!watched.isEmpty()) {
@@ -221,6 +225,14 @@ void PathCacheManager::restartScanFrom(const QString &rootPath)
     {
         QMutexLocker locker(&m_queueMutex);
         m_scanQueue.clear();
+    }
+
+    // Drop the completed-root marker for this path so a rescan of the same
+    // root actually re-walks it (otherwise scanWorker's "already covered"
+    // shortcut bails immediately).
+    {
+        QMutexLocker locker(&m_mutex);
+        m_completedRoots.remove(normalizedRoot);
     }
 
     m_scanning.storeRelease(1);
@@ -482,18 +494,23 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
             return;
         }
 
-        QMutexLocker locker(&m_mutex);
-        QStringList toRemove;
-        for (const QString &cached : m_paths) {
-            if (cached == path || cached.startsWith(path + "/")) {
-                toRemove.append(cached);
+        {
+            QMutexLocker locker(&m_mutex);
+            QStringList toRemove;
+            for (const QString &cached : m_paths) {
+                if (cached == path || cached.startsWith(path + "/")) {
+                    toRemove.append(cached);
+                }
+            }
+            for (const QString &p : toRemove) {
+                m_paths.removeAll(p);
+                m_pathSet.remove(p);
+                m_watcher->removePath(p);
             }
         }
-        for (const QString &p : toRemove) {
-            m_paths.removeAll(p);
-            m_pathSet.remove(p);
-            m_watcher->removePath(p);
-        }
+        // Also drop every file under the dead directory.
+        FileCacheManager::instance()->removeFile(path);
+        FileCacheManager::instance()->removeFilesUnder(path);
         emit cacheUpdated();
         return;
     }
@@ -551,17 +568,58 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
             }
 
             // Directory was truly deleted - remove it and all children
-            QMutexLocker locker(&m_mutex);
-            QStringList toRemove;
-            for (const QString &p : m_paths) {
-                if (p == cached || p.startsWith(cached + "/")) {
-                    toRemove.append(p);
+            {
+                QMutexLocker locker(&m_mutex);
+                QStringList toRemove;
+                for (const QString &p : m_paths) {
+                    if (p == cached || p.startsWith(cached + "/")) {
+                        toRemove.append(p);
+                    }
+                }
+                for (const QString &p : toRemove) {
+                    m_paths.removeAll(p);
+                    m_pathSet.remove(p);
+                    m_watcher->removePath(p);
                 }
             }
-            for (const QString &p : toRemove) {
-                m_paths.removeAll(p);
-                m_pathSet.remove(p);
-                m_watcher->removePath(p);
+            FileCacheManager::instance()->removeFilesUnder(cached);
+        }
+    }
+
+    // File-level diff: pick up newly created and removed files in this
+    // directory. (Files don't get their own watcher entry; we piggyback on
+    // the watched parent directory.)
+    {
+        QDir::Filters fileFilters = QDir::Files | QDir::NoDotAndDotDot
+                                    | QDir::Readable | QDir::Hidden;
+        const QStringList currentFiles = dir.entryList(fileFilters);
+        FileCacheManager *fileCache = FileCacheManager::instance();
+
+        // Snapshot of cached files directly under `path` (one level deep).
+        QStringList cachedFilesHere;
+        const QString prefix = path.endsWith('/') ? path : path + "/";
+        for (const QString &p : fileCache->cachedFiles()) {
+            if (p.startsWith(prefix)) {
+                const QString remainder = p.mid(prefix.length());
+                if (!remainder.contains('/')) cachedFilesHere.append(p);
+            }
+        }
+
+        // Added files.
+        for (const QString &entry : currentFiles) {
+            if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(entry)) {
+                continue;
+            }
+            const QString full = prefix + entry;
+            if (!fileCache->contains(full)) fileCache->addFile(full);
+        }
+
+        // Removed files.
+        for (const QString &cached : cachedFilesHere) {
+            const QString name = cached.mid(prefix.length());
+            if (!currentFiles.contains(name)) {
+                QFileInfo info(cached);
+                if (!info.exists()) fileCache->removeFile(cached);
             }
         }
     }
@@ -609,6 +667,34 @@ static bool isPathLevelExcluded(const QString &absolutePath)
         if (absolutePath == prefix || absolutePath.startsWith(prefix + QLatin1Char('/'))) {
             return true;
         }
+    }
+    return false;
+}
+
+// Opaque bundle directories — these have a directory structure on disk
+// (Application bundles, Photos library packages, etc.) but the user thinks
+// of them as a single thing. Don't descend into them.
+//
+// We match by basename suffix (case-insensitive) so the rule applies anywhere
+// in the tree (~/Pictures/Foo.photoslibrary, /Applications/Bar.app, etc.).
+static const QStringList &opaqueBundleSuffixes()
+{
+    static const QStringList kBundles = {
+        QStringLiteral(".app"),
+        QStringLiteral(".photoslibrary"),
+        QStringLiteral(".imovielibrary"),
+        QStringLiteral(".musiclibrary"),
+        QStringLiteral(".tvlibrary"),
+        QStringLiteral(".aplibrary"),
+    };
+    return kBundles;
+}
+
+static bool isOpaqueBundle(const QString &basename)
+{
+    const QString lower = basename.toLower();
+    for (const QString &suffix : opaqueBundleSuffixes()) {
+        if (lower.endsWith(suffix)) return true;
     }
     return false;
 }
@@ -684,12 +770,12 @@ void PathCacheManager::scanWorker()
         // Standalone-app drift: always include hidden in the cache.
         // Eye-toggle is now purely presentational — filtered out by the
         // search worker / tree view. See docs/todos.md TODO 4.
-        QDir::Filters workerFilters = QDir::Dirs | QDir::NoDotAndDotDot
+        QDir::Filters folderFilters = QDir::Dirs | QDir::NoDotAndDotDot
                                       | QDir::Readable | QDir::Hidden;
-        QStringList entries = dir.entryList(workerFilters);
+        QStringList folderEntries = dir.entryList(folderFilters);
         QStringList newPaths;
 
-        for (const QString &entry : entries) {
+        for (const QString &entry : folderEntries) {
             if (m_stopRequested.loadAcquire()) {
                 break;
             }
@@ -699,6 +785,12 @@ void PathCacheManager::scanWorker()
                 m_foldersExcluded.fetchAndAddRelaxed(1);
                 continue;
             }
+
+            // Opaque bundles (.app, .photoslibrary, ...) are added to the
+            // folder cache so they remain selectable in the picker, but we
+            // do NOT descend into them — they're treated as a single thing.
+            // Skip the queue-enqueue step for these.
+            const bool isBundle = isOpaqueBundle(entry);
 
             QString fullPath = currentPath + "/" + entry;
 
@@ -719,10 +811,40 @@ void PathCacheManager::scanWorker()
                 }
             }
 
-            newPaths.append(fullPath);
+            // Bundles go into the folder cache but don't get enqueued for
+            // further scanning. Regular folders are added to both the cache
+            // and the work queue.
+            if (isBundle) {
+                QMutexLocker locker(&m_mutex);
+                if (!m_pathSet.contains(fullPath)) {
+                    m_paths.append(fullPath);
+                    m_pathSet.insert(fullPath);
+                    m_foldersIndexed.fetchAndAddRelaxed(1);
+                }
+            } else {
+                newPaths.append(fullPath);
+            }
         }
 
-        // Add to cache and queue
+        // Also enumerate files in the same directory and feed them to the
+        // file cache. One scan walk, two destinations. Files are checked
+        // against the dedicated file-exclude pattern list, not the folder one.
+        if (!m_stopRequested.loadAcquire()) {
+            QDir::Filters fileFilters = QDir::Files | QDir::NoDotAndDotDot
+                                        | QDir::Readable | QDir::Hidden;
+            QStringList fileEntries = dir.entryList(fileFilters);
+            FileCacheManager *fileCache = FileCacheManager::instance();
+            for (const QString &entry : fileEntries) {
+                if (m_stopRequested.loadAcquire()) break;
+                if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(entry)) {
+                    continue;
+                }
+                QString fullFilePath = currentPath + "/" + entry;
+                fileCache->addFile(fullFilePath);
+            }
+        }
+
+        // Add folders to cache and queue
         if (!newPaths.isEmpty()) {
             {
                 QMutexLocker locker(&m_mutex);
