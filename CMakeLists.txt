@@ -54,6 +54,8 @@ set(MACOS_SEARCH_LIB_SOURCES
     src/RipgrepRunner.h
     src/EditorLauncher.cpp
     src/EditorLauncher.h
+    src/Bench.cpp
+    src/Bench.h
     src/MaudeConfig.cpp
     src/MaudeConfig.h
     src/ThemeManager.cpp

@@ -1,4 +1,5 @@
 #include "Autostart.h"
+#include "Bench.h"
 #include "ExcludeSettings.h"
 #include "FirstRunDialog.h"
 #include "FolderBrowserDialog.h"
@@ -92,9 +93,26 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationDomain("v-und-s.de");
     QCoreApplication::setApplicationName("macos-search");
 
+    // --bench short-circuits the GUI. Runs the benchmark, prints JSON, exits.
+    // Set offscreen platform proactively so the benchmark doesn't try to
+    // talk to a window server.
+    {
+        for (int i = 1; i < argc; ++i) {
+            if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--bench")) {
+                qputenv("QT_QPA_PLATFORM", "offscreen");
+                break;
+            }
+        }
+    }
+
     QApplication app(argc, argv);
     QApplication::setStyle("macos");
     QApplication::setWindowIcon(QIcon(":/app/macos-search.png"));
+
+    {
+        const int rc = Bench::runIfRequested(argc, argv);
+        if (rc >= 0) return rc;
+    }
 
     // Belt + braces: keep the app alive even if the main dialog hides
     // momentarily (e.g. an open-with-default-app call that, on some macOS

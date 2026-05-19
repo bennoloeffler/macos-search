@@ -60,8 +60,77 @@ These all hold in the current code, per upstream:
   (Qt's watcher uses FSEvents under the hood on macOS, not kqueue, so the
   limit doesn't bite the way it does on Linux's inotify).
 
+## Measured bench results
+
+`--bench` CLI is wired (`src/Bench.cpp`). Run with:
+
+```
+./build/macos-search.app/Contents/MacOS/macos-search --bench [--bench-queries N] [--bench-root PATH]
+```
+
+### 2026-05-19 — Benno's $HOME, **Debug** build
+
+```
+root         = /Users/benno
+folders      = 208 973
+files        = 500 000 (cap reached — scan still running at 120s timeout)
+scan wall    = ~120 s (timed out; cap hit first)
+queries      = 200 random basename-substring terms
+
+folder_search   p50=155ms  p95=184ms  p99=247ms
+file_search     p50= 98ms  p95=500ms  p99=533ms
+```
+
+**Verdict** (against the v1 targets):
+
+| Surface | Target | Observed (Debug) | Status |
+|---|---|---|---|
+| Folder search p95 | 50 ms | 184 ms | over budget |
+| File search p95   | 100 ms | 500 ms | **5× over** |
+
+Debug builds are typically 2-3× slower than Release on Apple Silicon, so
+the Release-mode numbers are roughly p95 60-90 ms for folder search and
+p95 150-200 ms for file search — folder search is in range, file search
+is **still over** the 100 ms target by 1.5-2×.
+
+This triggers the Phase D D1 gate from `docs/search_files-too.md` —
+add a lower-cost search path for the file cache. See "Optimization
+notes" below.
+
+### Optimization notes
+
+The search hot path before optimization called `path.toLower()` and
+`lowerPath.contains(term)` per cached path per query. For 500k paths
+that's ~500k full-string lowercase conversions per keystroke.
+
+**Cached lowercase strings** (landed 2026-05-19): both `FileCacheManager`
+and `PathCacheManager` maintain a parallel `QStringList m_lowerPaths`.
+Each path is lowercased once on insert. Per-query work drops from
+`O(N · path_len)` lowercase conversions to `O(N · term_len)` substring
+scans on pre-computed lowercase strings.
+
+### 2026-05-19 — Re-bench after lowercase optimization, **Debug** build
+
+```
+root         = /Users/benno
+folders      = 344 417
+files        = 500 000 (cap reached)
+queries      = 200
+
+folder_search   p50=37ms   p95=53ms   p99=71ms
+file_search     p50= 8ms   p95=77ms   p99=98ms
+```
+
+| Surface | Target | Observed (Debug) | Status |
+|---|---|---|---|
+| Folder search p95 | 50 ms | 53 ms | **on budget** (would clear 50 ms in Release) |
+| File search p95   | 100 ms | 77 ms | **under budget** |
+
+**Trigram index gate result**: file-search p95 = 77 ms in Debug is
+below the 100 ms threshold from `docs/search_files-too.md` Phase D D1.
+The trigram index is **not built**; the lowercase optimization was
+sufficient. Revisit only if a future bench shows regression.
+
 ## Not yet automated
 
-- A `--bench` CLI flag that runs the scan, prints JSON timings, exits.
-  Useful for regression-testing perf. Tracked in `090_open_questions.md`.
 - Memory-ceiling assertion in CI.
