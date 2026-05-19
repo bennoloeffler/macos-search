@@ -56,6 +56,8 @@ set(MACOS_SEARCH_LIB_SOURCES
     src/EditorLauncher.h
     src/Bench.cpp
     src/Bench.h
+    src/SearchResultDelegate.cpp
+    src/SearchResultDelegate.h
     src/MaudeConfig.cpp
     src/MaudeConfig.h
     src/ThemeManager.cpp
@@ -194,6 +196,8 @@ set(MACOS_SEARCH_TEST_SOURCES
     tests/FileSearchUiTest.h
     tests/ContentSearchE2ETest.cpp
     tests/ContentSearchE2ETest.h
+    tests/SearchResultDelegateTest.cpp
+    tests/SearchResultDelegateTest.h
     ${MACOS_SEARCH_LIB_SOURCES}
     assets/icons.qrc
 )

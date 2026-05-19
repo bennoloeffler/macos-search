@@ -97,9 +97,6 @@ private:
     QString resolvedPath() const;
     void saveSettings();
     void loadSettings();
-    QString highlightMatches(const QString &path, const QString &query);
-    QString highlightSnippet(const QString &snippet, int start, int end);
-    QString extensionChipHtml(const QString &path);
 
     QVBoxLayout *m_mainLayout = nullptr;
     QLabel *m_titleLabel = nullptr;

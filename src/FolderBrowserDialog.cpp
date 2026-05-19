@@ -12,6 +12,7 @@
 #include "PathSelector/PathSelector.h"
 #include "PreferencesDialog.h"
 #include "RipgrepRunner.h"
+#include "SearchResultDelegate.h"
 #include "SwiftUIStyle.h"
 #include <QAction>
 #include <QApplication>
@@ -602,6 +603,7 @@ void FolderBrowserDialog::setupUi()
     m_searchResultsList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_searchResultsList->setWordWrap(false);
     m_searchResultsList->setTextElideMode(Qt::ElideNone);
+    m_searchResultsList->setItemDelegate(new SearchResultDelegate(this));
 
     m_viewStack->addWidget(m_folderTreeView);
     m_viewStack->addWidget(m_searchResultsList);
@@ -923,50 +925,28 @@ void FolderBrowserDialog::onFileSearchResultsReady(const QList<SearchResult> &re
     triggerContentSearch();
 }
 
-QString FolderBrowserDialog::extensionChipHtml(const QString &path)
-{
-    QString ext = QFileInfo(path).suffix().toLower();
-    if (ext.isEmpty()) return QString();
-    return QString("<span style='color:%1; font-size:10px; "
-                   "background:%2; padding:1px 4px; border-radius:3px; "
-                   "margin-left:6px;'>.%3</span>")
-        .arg(SwiftUIStyle::secondaryTextColor(),
-             SwiftUIStyle::chipBackground(),
-             ext.toHtmlEscaped());
-}
-
 void FolderBrowserDialog::rebuildMergedResults()
 {
     m_searchResultsList->clear();
     m_selectedLineNumber = 0;
 
-    // Are we in "content-search active" mode? — content field has a non-empty
-    // query and ripgrep has finished. While busy, leave the unfiltered file
-    // list visible so the user sees that something is happening.
+    using Kind = SearchResultDelegate::Kind;
+    using Roles = SearchResultDelegate;
+
     const bool contentActive =
         m_contentField && !m_contentField->text().isEmpty() && !m_contentBusy
         && m_searchMode != SearchMode::Folders;
 
-    // Merge folder and file results, sort by score descending.
-    struct Row {
-        SearchResult sr;
-        bool isFile = false;
-    };
+    struct Row { SearchResult sr; bool isFile = false; };
     QList<Row> rows;
     rows.reserve(m_lastFolderResults.size() + m_lastFileResults.size());
     if (!contentActive) {
-        // Normal mode: surface both folder and file hits.
         for (const SearchResult &r : m_lastFolderResults) rows.append({ r, false });
         for (const SearchResult &r : m_lastFileResults)   rows.append({ r, true  });
     } else {
-        // Content-search mode: only files that actually contain a content
-        // match are surfaced. Folders are hidden — content search is a
-        // file-only refinement, so folder hits would be noise.
         for (const SearchResult &r : m_lastFileResults) {
             auto it = m_contentMatchesByFile.find(r.path);
-            if (it == m_contentMatchesByFile.end() || it.value().isEmpty()) {
-                continue;
-            }
+            if (it == m_contentMatchesByFile.end() || it.value().isEmpty()) continue;
             rows.append({ r, true });
         }
     }
@@ -974,84 +954,38 @@ void FolderBrowserDialog::rebuildMergedResults()
         if (a.sr.score != b.sr.score) return a.sr.score > b.sr.score;
         return a.sr.path.length() < b.sr.path.length();
     });
-    // Cap merged list at 200 (folders + files combined).
     if (rows.size() > 200) rows.resize(200);
 
-    // Helpers for sizing widget items. Width is measured from the inner
-    // container so paths can trigger the horizontal scrollbar; height is
-    // FIXED per row class so all rows look uniform regardless of HTML
-    // side-effects in their RichText labels (extension chips, badges,
-    // match counts). Relying on container->sizeHint().height() produced
-    // wildly inconsistent row heights — the bug reported 2026-05-19.
-    auto sizeItemToContent = [this](QListWidgetItem *item, QWidget *w,
-                                    int fixedHeight) {
-        w->setFixedHeight(fixedHeight);
-        w->ensurePolished();
-        w->adjustSize();
-        const int natural = w->sizeHint().width();
-        const int width = qMax(natural + 16,
+    auto *delegate = qobject_cast<SearchResultDelegate *>(
+        m_searchResultsList->itemDelegate());
+
+    auto sizeRow = [this, delegate](QListWidgetItem *item, int height) {
+        int natural = delegate ? delegate->naturalWidth(item) : 0;
+        if (natural <= 0) natural = m_searchResultsList->viewport()->width();
+        const int width = qMax(natural,
                                m_searchResultsList->viewport()->width());
-        item->setSizeHint(QSize(width, fixedHeight));
+        item->setSizeHint(QSize(width, height));
     };
 
     for (const Row &row : rows) {
         auto *item = new QListWidgetItem(m_searchResultsList);
-
-        auto *container = new QWidget();
-        auto *layout = new QHBoxLayout(container);
-        layout->setContentsMargins(12, 4, 12, 4);
-        layout->setSpacing(8);
-
-        // Score badge (small pill)
-        auto *scoreLabel = new QLabel(QString::number(row.sr.score));
-        scoreLabel->setFixedWidth(28);
-        scoreLabel->setAlignment(Qt::AlignCenter);
-        scoreLabel->setStyleSheet(
-            "background-color: #e1bee7; color: #6a1b9a; "
-            "border-radius: 4px; font-size: 10px; font-weight: bold; padding: 2px;"
-        );
-        layout->addWidget(scoreLabel);
-
-        // Kind glyph: 📁 for folders, 📄 for files (text glyph, no asset dep).
-        auto *kindLabel = new QLabel(row.isFile ? QStringLiteral("📄")
-                                                : QStringLiteral("📁"));
-        kindLabel->setStyleSheet("font-size: 12px;");
-        layout->addWidget(kindLabel);
-
-        // Path with highlighted matches + extension chip for files. Don't
-        // stretch — the row's natural width should be content-driven so the
-        // list view can request a horizontal scrollbar.
-        QString displayText = highlightMatches(row.sr.path, m_lastSearchQuery);
-        if (row.isFile) displayText += extensionChipHtml(row.sr.path);
-        auto *pathLabel = new QLabel(displayText);
-        pathLabel->setTextFormat(Qt::RichText);
-        pathLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-        pathLabel->setWordWrap(false);
-        layout->addWidget(pathLabel);
-
-        // Content-match count badge (if any matches found in this file).
-        const auto matchesIt = m_contentMatchesByFile.find(row.sr.path);
-        if (row.isFile && matchesIt != m_contentMatchesByFile.end()
-            && !matchesIt.value().isEmpty()) {
-            auto *cm = new QLabel(QString("%1 match%2")
-                                      .arg(matchesIt.value().size())
-                                      .arg(matchesIt.value().size() == 1 ? "" : "es"));
-            cm->setStyleSheet(QString(
-                "color: white; background: %1; border-radius: 8px; "
-                "padding: 1px 8px; font-size: 10px; font-weight: 600;")
-                                  .arg(SwiftUIStyle::BrandColor));
-            layout->addWidget(cm);
+        item->setData(Roles::PathRole, row.sr.path);
+        item->setData(Roles::LineRole, 0);
+        item->setData(Roles::KindRole,
+                      static_cast<int>(row.isFile ? Kind::File : Kind::Folder));
+        item->setData(Roles::ScoreRole, row.sr.score);
+        item->setData(Roles::QueryRole, m_lastSearchQuery);
+        if (row.isFile) {
+            item->setData(Roles::ExtRole, QFileInfo(row.sr.path).suffix().toLower());
         }
 
-        // Trailing stretch so the row expands cleanly when the viewport is
-        // wider than the content; horizontal scroll kicks in when content
-        // is wider than viewport.
-        layout->addStretch(1);
+        const auto matchesIt = m_contentMatchesByFile.find(row.sr.path);
+        const int matchCount = (row.isFile && matchesIt != m_contentMatchesByFile.end())
+                                   ? matchesIt.value().size()
+                                   : 0;
+        item->setData(Roles::MatchCountRole, matchCount);
 
-        item->setData(Qt::UserRole, row.sr.path);
-        item->setData(Qt::UserRole + 1, /*lineNumber*/ 0);
-        m_searchResultsList->setItemWidget(item, container);
-        sizeItemToContent(item, container, /*fixedHeight*/ 36);
+        sizeRow(item, SearchResultDelegate::kParentHeight);
 
         // Inline content-match child rows under this file (if any).
         if (row.isFile && matchesIt != m_contentMatchesByFile.end()) {
@@ -1060,54 +994,22 @@ void FolderBrowserDialog::rebuildMergedResults()
             for (int i = 0; i < shownCap; ++i) {
                 const ContentMatch &m = matches.at(i);
                 auto *childItem = new QListWidgetItem(m_searchResultsList);
-                auto *cw = new QWidget();
-                // Subtle left-border + bg to visually group child rows under
-                // their parent file row.
-                cw->setStyleSheet(QString(
-                    "QWidget { background: %1; border-left: 2px solid %2; }")
-                                      .arg(SwiftUIStyle::secondaryBackground(),
-                                           SwiftUIStyle::BrandColor));
-                auto *cl = new QHBoxLayout(cw);
-                cl->setContentsMargins(64, 3, 12, 3);
-                cl->setSpacing(10);
-
-                // Line number — fixed 60px, right-aligned, dim monospace.
-                auto *lineNo = new QLabel(QString::number(m.lineNumber));
-                lineNo->setFixedWidth(60);
-                lineNo->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                lineNo->setStyleSheet(QString(
-                    "color: %1; font-family: 'SF Mono', Menlo, monospace; "
-                    "font-size: 11px; background: transparent; border: none;")
-                                          .arg(SwiftUIStyle::secondaryTextColor()));
-                cl->addWidget(lineNo);
-
-                // Snippet — monospace 12px, highlight only the matched span.
-                auto *snip = new QLabel(highlightSnippet(m.snippet,
-                                                         m.matchStart, m.matchEnd));
-                snip->setTextFormat(Qt::RichText);
-                snip->setWordWrap(false);
-                snip->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-                snip->setStyleSheet(QString(
-                    "color: %1; font-family: 'SF Mono', Menlo, monospace; "
-                    "font-size: 12px; background: transparent; border: none;")
-                                        .arg(SwiftUIStyle::primaryTextColor()));
-                cl->addWidget(snip);
-                cl->addStretch(1);
-
-                childItem->setData(Qt::UserRole, row.sr.path);
-                childItem->setData(Qt::UserRole + 1, m.lineNumber);
-                m_searchResultsList->setItemWidget(childItem, cw);
-                sizeItemToContent(childItem, cw, /*fixedHeight*/ 24);
+                childItem->setData(Roles::PathRole, row.sr.path);
+                childItem->setData(Roles::LineRole, m.lineNumber);
+                childItem->setData(Roles::KindRole,
+                                   static_cast<int>(Kind::ContentLine));
+                childItem->setData(Roles::SnippetRole, m.snippet);
+                childItem->setData(Roles::SnippetHlStartRole, m.matchStart);
+                childItem->setData(Roles::SnippetHlEndRole, m.matchEnd);
+                sizeRow(childItem, SearchResultDelegate::kChildHeight);
             }
             if (matches.size() > shownCap) {
-                const QString more =
-                    tr("    + %1 more matches").arg(matches.size() - shownCap);
-                auto *moreItem = new QListWidgetItem(more, m_searchResultsList);
+                auto *moreItem = new QListWidgetItem(m_searchResultsList);
                 moreItem->setFlags(moreItem->flags() & ~Qt::ItemIsSelectable);
-                QFont f = moreItem->font();
-                f.setItalic(true);
-                moreItem->setFont(f);
-                moreItem->setForeground(QColor(SwiftUIStyle::secondaryTextColor()));
+                moreItem->setData(Roles::KindRole,
+                                  static_cast<int>(Kind::MoreLine));
+                moreItem->setData(Roles::MoreCountRole, matches.size() - shownCap);
+                sizeRow(moreItem, SearchResultDelegate::kChildHeight);
             }
         }
     }
@@ -1118,15 +1020,14 @@ void FolderBrowserDialog::rebuildMergedResults()
                   .arg(m_lastFileResults.size())
                   .arg(m_lastFileResults.size() == 1 ? "" : "s")
             : tr("No results found");
-        auto *item = new QListWidgetItem(msg);
+        auto *item = new QListWidgetItem(m_searchResultsList);
+        item->setData(Roles::KindRole, static_cast<int>(Kind::Empty));
+        item->setData(Roles::PathRole, msg);
         item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
-        m_searchResultsList->addItem(item);
+        sizeRow(item, SearchResultDelegate::kEmptyHeight);
     }
 
-    if (!rows.isEmpty()) {
-        m_searchResultsList->setCurrentRow(0);
-    }
-
+    if (!rows.isEmpty()) m_searchResultsList->setCurrentRow(0);
     updateResolvedPathLabel();
 }
 
@@ -1402,85 +1303,6 @@ void FolderBrowserDialog::onContentFinished(int /*total*/)
     m_contentBusy = false;
     rebuildMergedResults();
     updateContentFieldState();
-}
-
-QString FolderBrowserDialog::highlightSnippet(const QString &snippet, int start, int end)
-{
-    if (start < 0 || end <= start || start >= snippet.length()) {
-        return snippet.toHtmlEscaped();
-    }
-    end = qMin(end, static_cast<int>(snippet.length()));
-    QString out;
-    out += snippet.left(start).toHtmlEscaped();
-    out += "<span style='background-color:#e1bee7; color:#6a1b9a; font-weight:bold;'>";
-    out += snippet.mid(start, end - start).toHtmlEscaped();
-    out += "</span>";
-    out += snippet.mid(end).toHtmlEscaped();
-    return out;
-}
-
-QString FolderBrowserDialog::highlightMatches(const QString &path, const QString &query)
-{
-    if (query.isEmpty()) {
-        return path.toHtmlEscaped();
-    }
-
-    // Split query into terms
-    QStringList terms = query.toLower().split(' ', Qt::SkipEmptyParts);
-    if (terms.isEmpty()) {
-        return path.toHtmlEscaped();
-    }
-
-    QString lowerPath = path.toLower();
-
-    // Find all match ranges for all terms
-    QVector<QPair<qsizetype, qsizetype>> ranges; // (start, end)
-    for (const QString &term : terms) {
-        qsizetype pos = 0;
-        while ((pos = lowerPath.indexOf(term, pos)) != -1) {
-            ranges.append({pos, pos + term.length()});
-            pos += term.length();
-        }
-    }
-
-    if (ranges.isEmpty()) {
-        return path.toHtmlEscaped();
-    }
-
-    // Sort ranges by start position
-    std::sort(ranges.begin(), ranges.end());
-
-    // Merge overlapping ranges
-    QVector<QPair<qsizetype, qsizetype>> merged;
-    merged.append(ranges.first());
-    for (qsizetype i = 1; i < ranges.size(); ++i) {
-        auto &last = merged.last();
-        if (ranges[i].first <= last.second) {
-            last.second = qMax(last.second, ranges[i].second);
-        } else {
-            merged.append(ranges[i]);
-        }
-    }
-
-    // Build result with highlights
-    QString result;
-    qsizetype lastEnd = 0;
-    for (const auto &range : merged) {
-        // Add non-matching part
-        result += path.mid(lastEnd, range.first - lastEnd).toHtmlEscaped();
-
-        // Add matching part with highlight
-        result += "<span style='background-color: #e1bee7; color: #6a1b9a; font-weight: bold;'>";
-        result += path.mid(range.first, range.second - range.first).toHtmlEscaped();
-        result += "</span>";
-
-        lastEnd = range.second;
-    }
-
-    // Add remaining part
-    result += path.mid(lastEnd).toHtmlEscaped();
-
-    return result;
 }
 
 void FolderBrowserDialog::onPathSelectorChanged(const QString &path)
