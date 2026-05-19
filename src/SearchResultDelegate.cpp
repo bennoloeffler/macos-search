@@ -30,8 +30,13 @@ QColor scoreBgColor()        { return QColor("#f0d9f5"); }
 QColor scoreFgColor()        { return QColor("#6a1b9a"); }
 QColor scoreBgSelectedColor(){ return QColor(255, 255, 255, 60); }
 QColor scoreFgSelectedColor(){ return QColor("#ffffff"); }
-QColor chipBgColor()         { return QColor(SwiftUIStyle::chipBackground()); }
-QColor chipFgColor()         { return QColor(SwiftUIStyle::secondaryTextColor()); }
+// Extension chip — dark-purple on a light-purple pill so it reads cleanly
+// against any row background. Earlier code passed SwiftUIStyle::chipBackground()
+// (a CSS rgba string like "rgba(0,0,0,0.05)") into QColor() — that parser
+// rejects the rgba form silently and produced an opaque black pill with
+// black text inside. Hardcode the brand purple here.
+QColor chipBgColor()         { return QColor("#e1bee7"); }
+QColor chipFgColor()         { return QColor("#6a1b9a"); }
 QColor pathFgColor()         { return QColor(SwiftUIStyle::primaryTextColor()); }
 QColor pathFgSelectedColor() { return QColor("#ffffff"); }
 QColor lineNoFgColor()       { return QColor(SwiftUIStyle::secondaryTextColor()); }
