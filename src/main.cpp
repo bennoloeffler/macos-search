@@ -178,9 +178,10 @@ int main(int argc, char *argv[])
     // Let the Preferences dialog (TODO 7) flip the hotkey live.
     dialog.setGlobalHotkey(hotkey);
     QObject::connect(&dialog, &FolderBrowserDialog::hotkeyPreferenceChanged,
-                     hotkey, [hotkey](bool enabled) {
+                     hotkey, [hotkey, &dialog, titleForHotkey](bool enabled) {
                          if (enabled) hotkey->registerSummonChord();
                          else hotkey->unregisterSummonChord();
+                         dialog.setWindowTitle(titleForHotkey(enabled));
                      });
 
     // Pre-scan the user's favorites in priority order. Each `scanComplete`
