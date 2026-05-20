@@ -13,3 +13,6 @@ compile_commands.json
 # Local editor scratch
 *.claude-backup
 *.swp
+
+# Screenshots — captured locally for dev / UI review, not source of truth
+screenshots/
