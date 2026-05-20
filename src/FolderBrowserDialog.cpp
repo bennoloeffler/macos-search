@@ -260,68 +260,89 @@ void FolderBrowserDialog::setupUi()
     toolbarLayout->setContentsMargins(0, 0, 0, 0);
     toolbarLayout->setSpacing(SwiftUIStyle::SpacingSmall);
 
-    // Up button with icon
+    // macOS toolbar icon button — 28x28 hit area, 14x14 glyph, no border by
+    // default, subtle gray hover. Matches the visual weight of the segmented
+    // control and the indexing-status label so the whole toolbar reads as
+    // one quiet row.
+    const QString toolbarBtnStyle = QStringLiteral(
+        "QPushButton { background: transparent; border: none; border-radius: 6px; }"
+        "QPushButton:hover { background: rgba(0,0,0,0.06); }"
+        "QPushButton:pressed { background: rgba(0,0,0,0.10); }"
+        "QPushButton:checked { background: rgba(158,56,190,0.14); }");
+
     m_upButton = new QPushButton(this);
     m_upButton->setObjectName("upButton");
     m_upButton->setFlat(true);
     m_upButton->setIcon(IconRegistry::coloredIcon("chevron-up", SwiftUIStyle::primaryTextQColor()));
-    m_upButton->setIconSize(QSize(16, 16));
-    m_upButton->setToolTip(tr("Go to parent folder"));
-    m_upButton->setFixedSize(32, 32);
+    m_upButton->setIconSize(QSize(14, 14));
+    m_upButton->setToolTip(tr("Parent folder (⌘↑)"));
+    m_upButton->setFixedSize(28, 28);
     m_upButton->setCursor(Qt::PointingHandCursor);
-    m_upButton->setStyleSheet(SwiftUIStyle::secondaryButtonStyleSheet());
+    m_upButton->setStyleSheet(toolbarBtnStyle);
 
-    // Home button with icon
     m_homeButton = new QPushButton(this);
     m_homeButton->setObjectName("homeButton");
     m_homeButton->setFlat(true);
     m_homeButton->setIcon(IconRegistry::coloredIcon("home", SwiftUIStyle::primaryTextQColor()));
-    m_homeButton->setIconSize(QSize(16, 16));
-    m_homeButton->setToolTip(tr("Go to home folder"));
-    m_homeButton->setFixedSize(32, 32);
+    m_homeButton->setIconSize(QSize(14, 14));
+    m_homeButton->setToolTip(tr("Home (⌘H)"));
+    m_homeButton->setFixedSize(28, 28);
     m_homeButton->setCursor(Qt::PointingHandCursor);
-    m_homeButton->setStyleSheet(SwiftUIStyle::secondaryButtonStyleSheet());
+    m_homeButton->setStyleSheet(toolbarBtnStyle);
 
     toolbarLayout->addWidget(m_upButton);
     toolbarLayout->addWidget(m_homeButton);
 
-    // Cache status label (in toolbar row)
+    // Cache status label — small secondary text, no chrome.
     m_cacheStatusLabel = new QLabel(this);
     m_cacheStatusLabel->setObjectName("cacheStatusLabel");
-    m_cacheStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; padding-left: 12px;").arg(SwiftUIStyle::secondaryTextColor()));
+    m_cacheStatusLabel->setStyleSheet(
+        "color: rgba(0,0,0,0.5); font-size: 11px; padding-left: 10px;");
     toolbarLayout->addWidget(m_cacheStatusLabel);
 
     toolbarLayout->addStretch();
 
     // === Segmented control: Folders | Files | Both ==========================
-    // Persisted in QSettings("searchMode"). Default: "both".
+    // macOS NSSegmentedControl pattern: one continuous control with a thin
+    // outer border, shared bg, and a single "pill" highlight on the
+    // selected segment (no saturated full-fill).
+    auto *segmentBar = new QFrame(this);
+    segmentBar->setObjectName("modeSegmentBar");
+    segmentBar->setStyleSheet(QStringLiteral(
+        "QFrame#modeSegmentBar { background: rgba(0,0,0,0.05); "
+        "border: 1px solid rgba(0,0,0,0.08); border-radius: 7px; }"));
+    auto *segmentLayout = new QHBoxLayout(segmentBar);
+    segmentLayout->setContentsMargins(2, 2, 2, 2);
+    segmentLayout->setSpacing(0);
+
     auto makeSegment = [this](const QString &label, const QString &name) {
         auto *btn = new QPushButton(label, this);
         btn->setObjectName(name);
         btn->setCheckable(true);
         btn->setAutoExclusive(true);
         btn->setCursor(Qt::PointingHandCursor);
-        btn->setMinimumWidth(60);
+        btn->setMinimumWidth(58);
+        btn->setFixedHeight(22);
         btn->setStyleSheet(QStringLiteral(
-            "QPushButton { padding: 4px 10px; border: 1px solid %1; "
-            "background: %2; color: %3; font-size: 11px; }"
-            "QPushButton:checked { background: %4; color: white; "
-            "border-color: %4; font-weight: 600; }")
-                .arg(SwiftUIStyle::subtleBorder(),
-                     SwiftUIStyle::secondaryBackground(),
-                     SwiftUIStyle::primaryTextColor(),
-                     SwiftUIStyle::BrandColor));
+            "QPushButton { background: transparent; border: none; "
+            "color: rgba(0,0,0,0.72); font-size: 12px; font-weight: 500; "
+            "padding: 0 12px; border-radius: 5px; }"
+            "QPushButton:hover:!checked { background: rgba(0,0,0,0.05); }"
+            "QPushButton:checked { background: white; color: rgba(0,0,0,0.85); "
+            "font-weight: 600; }"));
         return btn;
     };
     m_modeFolders = makeSegment(tr("Folders"), "modeFolders");
     m_modeFiles   = makeSegment(tr("Files"),   "modeFiles");
     m_modeBoth    = makeSegment(tr("Both"),    "modeBoth");
-    m_modeBoth->setChecked(true);  // overridden by loadSettings() below
+    m_modeBoth->setChecked(true);
 
-    toolbarLayout->addWidget(m_modeFolders);
-    toolbarLayout->addWidget(m_modeFiles);
-    toolbarLayout->addWidget(m_modeBoth);
-    toolbarLayout->addSpacing(12);
+    segmentLayout->addWidget(m_modeFolders);
+    segmentLayout->addWidget(m_modeFiles);
+    segmentLayout->addWidget(m_modeBoth);
+
+    toolbarLayout->addWidget(segmentBar);
+    toolbarLayout->addSpacing(10);
 
     connect(m_modeFolders, &QPushButton::toggled, this, [this](bool on) {
         if (on) { m_searchMode = SearchMode::Folders; onSearchModeChanged(); }
@@ -333,29 +354,28 @@ void FolderBrowserDialog::setupUi()
         if (on) { m_searchMode = SearchMode::Both; onSearchModeChanged(); }
     });
 
-    // Show hidden folders toggle (eye icon)
+    // Eye toggle — same compact 28x28 toolbar style as up/home.
     m_showHiddenButton = new QPushButton(this);
     m_showHiddenButton->setObjectName("showHiddenButton");
     m_showHiddenButton->setFlat(true);
     m_showHiddenButton->setCheckable(true);
     m_showHiddenButton->setToolTip(tr("Show hidden folders"));
-    m_showHiddenButton->setFixedSize(32, 32);
+    m_showHiddenButton->setFixedSize(28, 28);
     m_showHiddenButton->setCursor(Qt::PointingHandCursor);
     m_showHiddenButton->setIcon(IconRegistry::coloredIcon("eye", SwiftUIStyle::primaryTextQColor()));
-    m_showHiddenButton->setIconSize(QSize(16, 16));
-    m_showHiddenButton->setStyleSheet(SwiftUIStyle::secondaryButtonStyleSheet());
+    m_showHiddenButton->setIconSize(QSize(14, 14));
+    m_showHiddenButton->setStyleSheet(toolbarBtnStyle);
     toolbarLayout->addWidget(m_showHiddenButton);
 
-    // Exclude settings button (gear icon)
     m_excludeButton = new QPushButton(this);
     m_excludeButton->setObjectName("excludeButton");
     m_excludeButton->setFlat(true);
-    m_excludeButton->setToolTip(tr("Exclude Settings"));
-    m_excludeButton->setFixedSize(32, 32);
+    m_excludeButton->setToolTip(tr("Preferences…"));
+    m_excludeButton->setFixedSize(28, 28);
     m_excludeButton->setCursor(Qt::PointingHandCursor);
     m_excludeButton->setIcon(IconRegistry::coloredIcon("gear", SwiftUIStyle::primaryTextQColor()));
-    m_excludeButton->setIconSize(QSize(16, 16));
-    m_excludeButton->setStyleSheet(SwiftUIStyle::secondaryButtonStyleSheet());
+    m_excludeButton->setIconSize(QSize(14, 14));
+    m_excludeButton->setStyleSheet(toolbarBtnStyle);
     toolbarLayout->addWidget(m_excludeButton);
 
     m_mainLayout->addWidget(m_navigationToolbar);
@@ -370,59 +390,67 @@ void FolderBrowserDialog::setupUi()
 
     m_favoritesList = new QListWidget(this);
     m_favoritesList->setObjectName("favoritesList");
-    m_favoritesList->setFixedWidth(190);
+    m_favoritesList->setFixedWidth(168);
     m_favoritesList->setFrameShape(QFrame::NoFrame);
     m_favoritesList->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_favoritesList->setSpacing(2);   // gap between cards
+    m_favoritesList->setSpacing(0);
+
+    // Finder-style sidebar — transparent rows by default, subtle accent
+    // tint on the selected row, gray hover. No borders, no card framing —
+    // the heavy "card per favorite" look was the biggest single source of
+    // visual noise in the dialog.
     m_favoritesList->setStyleSheet(QStringLiteral(R"(
         QListWidget {
             background: transparent;
             border: none;
             outline: 0;
+            padding: 0px;
         }
-        /* Each favorite renders as a card with a soft background and
-           a subtle 1px border, so the list doesn't feel "naked". */
         QListWidget::item {
-            padding: 10px 12px;
-            border: 1px solid %3;
-            border-radius: 8px;
-            background: %4;
-            color: %1;
-            margin: 0px;
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: rgba(0, 0, 0, 0.7);
+            margin: 1px 6px;
         }
         QListWidget::item:hover {
-            background: %2;
-            border-color: %2;
+            background: rgba(0, 0, 0, 0.05);
         }
         QListWidget::item:selected {
-            background: %2;
-            border-color: %5;
+            background: rgba(158, 56, 190, 0.14);
             color: %1;
         }
-    )").arg(SwiftUIStyle::primaryTextColor(),
-            SwiftUIStyle::chipBackground(),
-            SwiftUIStyle::subtleBorder(),
-            SwiftUIStyle::secondaryBackground(),
-            SwiftUIStyle::BrandColor));
+        QListWidget::item:selected:active {
+            background: rgba(158, 56, 190, 0.16);
+        }
+    )").arg(SwiftUIStyle::BrandColor));
 
     auto *favSection = new QWidget(this);
     auto *favSectionLayout = new QVBoxLayout(favSection);
     favSectionLayout->setContentsMargins(0, 0, 0, 0);
-    favSectionLayout->setSpacing(6);
+    favSectionLayout->setSpacing(2);
 
-    QLabel *favHeader = new QLabel(tr("FAVOURITES"), this);
-    favHeader->setStyleSheet(QString("color: %1; font-size: 10px; "
-                                     "letter-spacing: 1px; padding: 4px 4px 4px 4px; "
-                                     "font-weight: 600;")
-                                 .arg(SwiftUIStyle::secondaryTextColor()));
+    QLabel *favHeader = new QLabel(tr("Favourites"), this);
+    favHeader->setStyleSheet(QStringLiteral(
+        "color: rgba(0,0,0,0.45); font-size: 11px; font-weight: 600; "
+        "letter-spacing: 0.2px; padding: 4px 14px;"));
     favSectionLayout->addWidget(favHeader);
     favSectionLayout->addWidget(m_favoritesList, 1);
 
-    m_addFavoriteButton = new QPushButton(tr("+ Add current"), this);
+    // "+ Add current" — Finder-sidebar-style: borderless, secondary text,
+    // left-aligned, sized to match the favorite rows.
+    m_addFavoriteButton = new QPushButton(tr("＋ Add current"), this);
+    m_addFavoriteButton->setObjectName("addFavoriteButton");
     m_addFavoriteButton->setFlat(true);
     m_addFavoriteButton->setCursor(Qt::PointingHandCursor);
     m_addFavoriteButton->setToolTip(tr("Add the current Search-in path as a favorite"));
-    m_addFavoriteButton->setStyleSheet(SwiftUIStyle::chipButtonStyleSheet());
+    m_addFavoriteButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; border: none; padding: 6px 12px; "
+        "margin: 1px 6px; text-align: left; color: rgba(0,0,0,0.55); "
+        "font-size: 13px; border-radius: 6px; }"
+        "QPushButton:hover { background: rgba(0,0,0,0.05); color: rgba(0,0,0,0.75); }"
+        "QPushButton:pressed { background: rgba(0,0,0,0.08); }"));
     favSectionLayout->addWidget(m_addFavoriteButton);
 
     bodyRow->addWidget(favSection);
@@ -458,8 +486,10 @@ void FolderBrowserDialog::setupUi()
     // Label with fixed width for alignment
     QLabel *rootLabel = new QLabel(tr("Search in:"), this);
     rootLabel->setObjectName("rootLabel");
-    rootLabel->setFixedWidth(70);
-    rootLabel->setStyleSheet(QString("color: %1; font-size: 12px;").arg(SwiftUIStyle::secondaryTextColor()));
+    rootLabel->setFixedWidth(96);
+    rootLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    rootLabel->setStyleSheet(
+        "color: rgba(0,0,0,0.55); font-size: 12px; font-weight: 500;");
     rootLayout->addWidget(rootLabel);
 
     // PathSelector widget (handles all path completion logic)
@@ -468,26 +498,23 @@ void FolderBrowserDialog::setupUi()
     m_pathSelector->setPath(QDir::homePath());
     rootLayout->addWidget(m_pathSelector, 1);
 
-    // Contextual button that adds the current Search-in path to the index.
-    // Uses expandToUser() so the soft cap auto-raises (up to the hard
-    // ceiling) for this deliberate user action. Styled to match the
-    // adjacent path-input row height (~30 px) — not the larger primary
-    // action style used at the bottom of the dialog.
+    // "Scan now" — compact secondary button matching the toolbar visual
+    // weight. Cap auto-raises via expandToUser() so this deliberate click
+    // can grow the index past today's soft limit.
     m_scanHereButton = new QPushButton(tr("Scan now"), this);
     m_scanHereButton->setObjectName("scanHereButton");
     m_scanHereButton->setCursor(Qt::PointingHandCursor);
     m_scanHereButton->setFlat(true);
-    m_scanHereButton->setFixedHeight(28);
+    m_scanHereButton->setFixedHeight(26);
     m_scanHereButton->setStyleSheet(QStringLiteral(
-        "QPushButton { padding: 0 12px; border: 1px solid %1; "
-        "background: %2; color: %3; font-size: 12px; border-radius: 6px; }"
-        "QPushButton:hover:enabled { background: %4; }"
-        "QPushButton:disabled { color: %5; background: %2; }")
-            .arg(SwiftUIStyle::subtleBorder(),
-                 SwiftUIStyle::secondaryBackground(),
-                 SwiftUIStyle::primaryTextColor(),
-                 SwiftUIStyle::chipBackground(),
-                 SwiftUIStyle::secondaryTextColor()));
+        "QPushButton { padding: 0 14px; border: 1px solid rgba(0,0,0,0.12); "
+        "background: white; color: rgba(0,0,0,0.78); font-size: 12px; "
+        "font-weight: 500; border-radius: 6px; }"
+        "QPushButton:hover:enabled { background: rgba(0,0,0,0.04); "
+        "border-color: rgba(0,0,0,0.18); }"
+        "QPushButton:pressed:enabled { background: rgba(0,0,0,0.08); }"
+        "QPushButton:disabled { color: rgba(0,0,0,0.35); "
+        "background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.08); }"));
     rootLayout->addWidget(m_scanHereButton);
     connect(m_scanHereButton, &QPushButton::clicked,
             this, &FolderBrowserDialog::onScanHereClicked);
@@ -504,8 +531,10 @@ void FolderBrowserDialog::setupUi()
     // Label with fixed width for alignment
     QLabel *searchLabel = new QLabel(tr("Search for:"), this);
     searchLabel->setObjectName("searchLabel");
-    searchLabel->setFixedWidth(70);
-    searchLabel->setStyleSheet(QString("color: %1; font-size: 12px;").arg(SwiftUIStyle::secondaryTextColor()));
+    searchLabel->setFixedWidth(96);
+    searchLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    searchLabel->setStyleSheet(
+        "color: rgba(0,0,0,0.55); font-size: 12px; font-weight: 500;");
     searchLayout->addWidget(searchLabel);
 
     // Search field
@@ -528,9 +557,10 @@ void FolderBrowserDialog::setupUi()
 
     QLabel *contentLabel = new QLabel(tr("Inside contents:"), this);
     contentLabel->setObjectName("contentLabel");
-    contentLabel->setFixedWidth(110);
-    contentLabel->setStyleSheet(QString("color: %1; font-size: 12px;")
-                                    .arg(SwiftUIStyle::secondaryTextColor()));
+    contentLabel->setFixedWidth(96);
+    contentLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    contentLabel->setStyleSheet(
+        "color: rgba(0,0,0,0.55); font-size: 12px; font-weight: 500;");
     contentLayout->addWidget(contentLabel);
 
     m_contentField = new QLineEdit(this);
@@ -540,16 +570,39 @@ void FolderBrowserDialog::setupUi()
     m_contentField->setStyleSheet(SwiftUIStyle::inputStyleSheet());
     contentLayout->addWidget(m_contentField, 1);
 
-    m_contentRegex = new QCheckBox(tr("Regex"), this);
+    // Regex toggle + help button — refined pill toggle (not a Qt checkbox)
+    // paired with a small circular help button. macOS-style: minimal chrome,
+    // accent color only on the active state.
+    m_contentRegex = new QCheckBox(tr(".*"), this);
     m_contentRegex->setObjectName("contentRegex");
-    m_contentRegex->setToolTip(tr("Interpret the content query as a regular expression"));
+    m_contentRegex->setCursor(Qt::PointingHandCursor);
+    m_contentRegex->setToolTip(tr("Regex mode — interpret the content query as a regular expression"));
+    m_contentRegex->setStyleSheet(QStringLiteral(
+        "QCheckBox { spacing: 0; padding: 0; margin: 0 4px; }"
+        "QCheckBox::indicator { width: 0; height: 0; }"
+        "QCheckBox { background: rgba(0,0,0,0.05); "
+        "border: 1px solid rgba(0,0,0,0.08); border-radius: 6px; "
+        "padding: 4px 12px; color: rgba(0,0,0,0.6); "
+        "font-family: 'SF Mono', Menlo, monospace; "
+        "font-size: 12px; font-weight: 600; }"
+        "QCheckBox:hover { background: rgba(0,0,0,0.08); }"
+        "QCheckBox:checked { background: rgba(158,56,190,0.16); "
+        "border-color: rgba(158,56,190,0.4); color: %1; }")
+            .arg(SwiftUIStyle::BrandColor));
     contentLayout->addWidget(m_contentRegex);
 
     m_contentHelpButton = new QPushButton(tr("?"), this);
     m_contentHelpButton->setObjectName("contentHelpButton");
-    m_contentHelpButton->setFixedSize(24, 24);
+    m_contentHelpButton->setFixedSize(22, 22);
+    m_contentHelpButton->setFlat(true);
     m_contentHelpButton->setCursor(Qt::PointingHandCursor);
-    m_contentHelpButton->setToolTip(tr("Regex cheatsheet"));
+    m_contentHelpButton->setToolTip(tr("Regex cheatsheet — 10 useful patterns"));
+    m_contentHelpButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; border: 1px solid rgba(0,0,0,0.15); "
+        "border-radius: 11px; color: rgba(0,0,0,0.55); "
+        "font-size: 11px; font-weight: 600; padding: 0; }"
+        "QPushButton:hover { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.8); }"
+        "QPushButton:pressed { background: rgba(0,0,0,0.1); }"));
     contentLayout->addWidget(m_contentHelpButton);
 
     m_mainLayout->addWidget(m_contentContainer);
@@ -557,8 +610,8 @@ void FolderBrowserDialog::setupUi()
     m_contentHintLabel = new QLabel(this);
     m_contentHintLabel->setObjectName("contentHintLabel");
     m_contentHintLabel->setStyleSheet(
-        QString("color: %1; font-size: 11px; padding: 0px 0px 4px 116px;")
-            .arg(SwiftUIStyle::secondaryTextColor()));
+        "color: rgba(0,0,0,0.45); font-size: 11px; "
+        "padding: 0px 0px 4px 110px;");
     m_mainLayout->addWidget(m_contentHintLabel);
 
     connect(m_contentField, &QLineEdit::textChanged,
@@ -685,19 +738,36 @@ void FolderBrowserDialog::setupUi()
     m_cancelButton->setStyleSheet(SwiftUIStyle::closeButtonStyleSheet());
     m_cancelButton->setVisible(false); // keep ptr for layout/keyEvent, hide button
 
-    // Choose button (primary action)
-    // Standalone-app drift: two buttons replace the single "Choose".
+    // Bottom action buttons — macOS HIG: secondary on the left (Open in
+    // Finder), primary accent on the right (Open with App). Both height-
+    // matched to the standard NSButton 28 px.
     m_openInFinderButton = new QPushButton(tr("Open in Finder"), this);
     m_openInFinderButton->setObjectName("openInFinderButton");
     m_openInFinderButton->setFlat(true);
     m_openInFinderButton->setCursor(Qt::PointingHandCursor);
-    m_openInFinderButton->setStyleSheet(SwiftUIStyle::secondaryButtonStyleSheet());
+    m_openInFinderButton->setFixedHeight(30);
+    m_openInFinderButton->setStyleSheet(QStringLiteral(
+        "QPushButton { padding: 0 18px; background: white; "
+        "border: 1px solid rgba(0,0,0,0.14); border-radius: 7px; "
+        "color: rgba(0,0,0,0.82); font-size: 13px; font-weight: 500; }"
+        "QPushButton:hover { background: rgba(0,0,0,0.04); "
+        "border-color: rgba(0,0,0,0.22); }"
+        "QPushButton:pressed { background: rgba(0,0,0,0.08); }"));
 
     m_openInAppButton = new QPushButton(tr("Open with App"), this);
     m_openInAppButton->setObjectName("openInAppButton");
     m_openInAppButton->setFlat(true);
     m_openInAppButton->setCursor(Qt::PointingHandCursor);
-    m_openInAppButton->setStyleSheet(SwiftUIStyle::primaryButtonStyleSheet());
+    m_openInAppButton->setFixedHeight(30);
+    m_openInAppButton->setStyleSheet(QStringLiteral(
+        "QPushButton { padding: 0 18px; background: %1; "
+        "border: none; border-radius: 7px; "
+        "color: white; font-size: 13px; font-weight: 600; }"
+        "QPushButton:hover { background: %2; }"
+        "QPushButton:pressed { background: %3; }")
+            .arg(SwiftUIStyle::BrandColor,
+                 SwiftUIStyle::BrandColorHover,
+                 SwiftUIStyle::BrandColorPressed));
 
     // Keep m_chooseButton as an alias of the primary "Open with App" button
     // so the keyPressEvent dispatch (Enter triggers it) still works.
