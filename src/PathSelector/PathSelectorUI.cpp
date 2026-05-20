@@ -53,9 +53,14 @@ void PathSelectorUI::setupUi()
     hintRow->setSpacing(SwiftUIStyle::SpacingSmall);
 
     m_hintLabel = new QLabel(this);
-    m_hintLabel->setFont(SwiftUIStyle::captionFont());
+    // Match the macOS form-row hint style: small, tertiary color, slight
+    // left padding so the text sits visually under the input's first
+    // character rather than under the container's outer edge.
+    QFont hintFont = m_hintLabel->font();
+    hintFont.setPointSize(10);
+    m_hintLabel->setFont(hintFont);
     m_hintLabel->setStyleSheet(
-        QStringLiteral("color: %1;").arg(SwiftUIStyle::secondaryTextColor()));
+        QStringLiteral("color: rgba(0,0,0,0.42); padding: 0 0 0 6px;"));
     hintRow->addWidget(m_hintLabel);
 
     m_createFolderButton = new QPushButton(QStringLiteral("Create Folder"), this);
@@ -429,40 +434,49 @@ void PathSelectorUI::updateTextStyle()
         return;
     }
 
-    QString styleSheet;
+    // The PathSelector lives inside a styled container (pathFieldFrame in
+    // FolderBrowserDialog) that provides the soft-rounded gray bg + border.
+    // The internal QLineEdit must therefore be visually transparent — no
+    // bg, no border — or it punches a white card out of the container.
+    //
+    // Each state-specific stylesheet keeps the per-state color tweak but
+    // ships the same neutral container styling so updateTextStyle() can be
+    // called any number of times without losing the "transparent input"
+    // look.
+    static const QString kInputBase =
+        QStringLiteral("QLineEdit { background: transparent; border: none; "
+                       "padding: 4px 6px; selection-background-color: %1; "
+                       "selection-color: white; ");
+
+    QString stateColor;
     QFont font = SwiftUIStyle::bodyFont();
 
     switch (m_state->state()) {
     case PathSelectorState::State::Complete:
         font.setBold(true);
-        styleSheet = QStringLiteral("QLineEdit { color: %1; }")
-            .arg(SwiftUIStyle::primaryTextColor());
+        stateColor = SwiftUIStyle::primaryTextColor();
         break;
-
     case PathSelectorState::State::Browsing:
         font.setBold(false);
-        styleSheet = QStringLiteral("QLineEdit { color: %1; }")
-            .arg(SwiftUIStyle::primaryTextColor());
+        stateColor = SwiftUIStyle::primaryTextColor();
         break;
-
     case PathSelectorState::State::PartialMultiple:
         font.setBold(false);
-        styleSheet = QStringLiteral("QLineEdit { color: %1; }")
-            .arg(SwiftUIStyle::secondaryTextColor());
+        stateColor = SwiftUIStyle::secondaryTextColor();
         break;
-
     case PathSelectorState::State::PartialSingle:
         font.setBold(true);
-        styleSheet = QStringLiteral("QLineEdit { color: %1; }")
-            .arg(SwiftUIStyle::secondaryTextColor());
+        stateColor = SwiftUIStyle::secondaryTextColor();
         break;
-
     case PathSelectorState::State::Invalid:
         font.setBold(false);
-        styleSheet = QStringLiteral("QLineEdit { color: %1; }")
-            .arg(SwiftUIStyle::ErrorColor);
+        stateColor = SwiftUIStyle::ErrorColor;
         break;
     }
+
+    const QString styleSheet =
+        kInputBase.arg(SwiftUIStyle::BrandColor)
+        + QStringLiteral("color: %1; }").arg(stateColor);
 
     m_lineEdit->setFont(font);
     m_lineEdit->setStyleSheet(styleSheet);
@@ -475,7 +489,8 @@ void PathSelectorUI::updateHintText()
     }
 
     QString hint;
-    QString color = SwiftUIStyle::secondaryTextColor();
+    // Default hint color: tertiary text. Invalid state overrides to error red.
+    QString color = QStringLiteral("rgba(0,0,0,0.42)");
     bool showCreateFolder = false;
 
     switch (m_state->state()) {
@@ -505,7 +520,9 @@ void PathSelectorUI::updateHintText()
     }
 
     m_hintLabel->setText(hint);
-    m_hintLabel->setStyleSheet(QStringLiteral("color: %1;").arg(color));
+    // Keep the left padding from the initial style; only update the color.
+    m_hintLabel->setStyleSheet(
+        QStringLiteral("color: %1; padding: 0 0 0 6px;").arg(color));
 
     if (m_createFolderButton) {
         m_createFolderButton->setVisible(showCreateFolder);
