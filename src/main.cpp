@@ -129,11 +129,22 @@ int main(int argc, char *argv[])
         PathCacheManager::instance()->stopScan();
     });
 
+    // Window title is hotkey-aware: when ⌃⌥⇧S is enabled we surface that
+    // in the title bar so the user discovers the chord without opening
+    // Preferences. Reactive — flipping the Preferences toggle updates this.
+    auto titleForHotkey = [](bool enabled) -> QString {
+        return enabled
+            ? QObject::tr("Open Project / Folder  ·  ⌃⌥⇧S to show/activate")
+            : QObject::tr("Open Project / Folder");
+    };
+    const bool hotkeyEnabledInitial = QSettings("Maude", "FolderBrowser")
+        .value("hotkeyEnabled", true).toBool();
+
     // Open the dialog at the resolved default start path. If the user has
     // marked a favorite as default that's where we open; otherwise $HOME.
     FolderBrowserDialog dialog(FolderBrowserDialog::resolveDefaultStartPath(),
                                nullptr);
-    dialog.setWindowTitle(QObject::tr("Open Project / Folder"));
+    dialog.setWindowTitle(titleForHotkey(hotkeyEnabledInitial));
     dialog.setWindowFlag(Qt::Window, true);
     dialog.show();
 

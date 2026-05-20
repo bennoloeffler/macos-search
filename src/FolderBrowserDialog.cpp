@@ -253,16 +253,6 @@ void FolderBrowserDialog::setupUi()
                                       SwiftUIStyle::SpacingLarge,
                                       SwiftUIStyle::SpacingLarge);
 
-    // Title (20pt, DemiBold)
-    m_titleLabel = new QLabel(tr("Select Folder"), this);
-    m_titleLabel->setObjectName("titleLabel");
-    QFont titleFont = m_titleLabel->font();
-    titleFont.setPointSize(20);
-    titleFont.setWeight(QFont::DemiBold);
-    m_titleLabel->setFont(titleFont);
-    m_titleLabel->setAlignment(Qt::AlignCenter);
-    m_mainLayout->addWidget(m_titleLabel);
-
     // Navigation toolbar
     m_navigationToolbar = new QWidget(this);
     m_navigationToolbar->setObjectName("navigationToolbar");

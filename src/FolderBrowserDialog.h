@@ -107,7 +107,6 @@ private:
     void applyTreeViewFilter();
 
     QVBoxLayout *m_mainLayout = nullptr;
-    QLabel *m_titleLabel = nullptr;
     QWidget *m_navigationToolbar = nullptr;
     QPushButton *m_upButton = nullptr;
     QPushButton *m_homeButton = nullptr;
