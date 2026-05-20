@@ -395,6 +395,85 @@ or hiding) effectively ends the session. Two paths used to call
   for the right UX (the indicator can show "Indexing soon · scan now"
   then flip directly to "Scanning" when the priority bump takes effect).
 
+### Search the complete Dropbox online (2026-05-20)
+
+- [ ] **Add an "online Dropbox" search mode** that hits the Dropbox
+  API instead of the local in-memory cache. Triggered by either a
+  new top-of-dialog tab (`Local Mac` | `Dropbox`) or, more cautiously,
+  a checkbox `☐ Search the complete Dropbox online` next to the
+  existing Folders/Files/Both segmented control.
+
+  **Why a separate mode, not a unified search.** The local search is
+  built around an in-memory cache scanned on startup; the Dropbox API
+  is a stateless query against a remote index. Latency, pagination,
+  auth, error modes, ranking, content-search semantics — none of them
+  carry over. Mixing the two into one results list would either dumb
+  down the local mode (debouncing for hundreds of ms to give the API
+  time) or surface stale/duplicate hits where the same file exists
+  both in the local Dropbox folder *and* in the API result set.
+
+  **Tabbed UI shape (my recommendation).** A small segmented control
+  at the very top of the dialog body:
+
+  ```
+   ┌─────────────────────────────┐
+   │  Local Mac  ┃   Dropbox     │
+   └─────────────────────────────┘
+   Search in:   /Users/benno/...
+   ...
+  ```
+
+  Switching tabs re-purposes the whole search row's UX:
+
+  | Element           | Local Mac mode             | Dropbox mode                                     |
+  |---|---|---|
+  | `Search in:`      | local path + scan indicator | Dropbox path prefix (e.g. `/Team/Projects`)     |
+  | `Search for:`     | filename query              | Dropbox API search query                         |
+  | `Inside contents:`| ripgrep on local files      | Dropbox content search (uses their `mode=filename_and_content` endpoint where available; falls back to filename-only) |
+  | Indicator pill    | scan state                  | API call state (`Idle` / `Querying…` / `Done`)   |
+  | Result count cap  | 200 cached rows             | Pagination cursor, +25 per "Load more" click     |
+
+  **Dependencies / open questions.**
+  - **Auth flow.** Dropbox API needs OAuth 2.0. Need a flow that
+    handles the redirect — embedded `QWebEngineView` is the easiest,
+    or hand-off to the system browser with a custom URL scheme
+    `macos-search://oauth-callback`. The token gets stored in the
+    macOS Keychain via `Security.framework`, not in QSettings (it's
+    a secret).
+  - **API limits.** Dropbox's `/files/search_v2` is rate-limited;
+    we should debounce to ~300 ms and cancel in-flight calls on new
+    keystroke (same pattern as ripgrep, different mechanism).
+  - **What's "complete Dropbox"?** Personal Dropbox? Team folder?
+    Multiple connected accounts? Probably scope to "the account
+    currently authenticated" with a Preferences pane listing all
+    connected accounts.
+  - **Result ranking.** Dropbox returns its own relevance ranking;
+    we should respect it rather than re-rank with `fuzzyScore`.
+  - **Content snippets.** Dropbox API does NOT return line numbers
+    or content excerpts. The content-search UX in the Dropbox mode
+    needs to be either dropped or filename-only.
+  - **Offline behavior.** Detect network unavailable, show a quiet
+    banner above the results list rather than failing silently.
+  - **Privacy.** Currently this app indexes locally and never makes
+    a network call. Adding API calls is a privacy change — surface
+    it explicitly: the first time Dropbox mode is selected, prompt
+    "This will send your search query to Dropbox. Continue?" with a
+    don't-ask-again checkbox.
+
+  **Code surface estimate.** Big. ~5-10 day feature:
+  - New `DropboxClient` class — OAuth, search, file metadata, error
+    handling.
+  - New `DropboxSearchWorker` mirroring `FolderSearchWorker` but
+    async against the API.
+  - Tab widget at the top of the dialog body, modal switch between
+    LocalMode and DropboxMode that re-parents the input rows.
+  - Result delegate extensions for Dropbox-specific row state
+    (last-modified, sharing icon, "open in Dropbox web" action).
+  - Preferences pane for account management + privacy toggle.
+
+  Not for this milestone; placeholder for when local search is
+  mature enough that adding a remote layer makes sense.
+
 ---
 
 ## Decisions already made (no longer open)
