@@ -615,7 +615,11 @@ void FolderBrowserDialog::setupUi()
     m_searchResultsList = new QListWidget(this);
     m_searchResultsList->setObjectName("searchResultsList");
     m_searchResultsList->setStyleSheet(SwiftUIStyle::listStyleSheet());
-    m_searchResultsList->setSpacing(4); // Per HIG spacing values
+    // Delegate owns the row-to-row rhythm (hairline separator + 6 px corner
+    // radius on selection). Setting spacing to 0 lets the rows touch so the
+    // separator does its job; with positive spacing the result feels stuttery.
+    m_searchResultsList->setSpacing(0);
+    m_searchResultsList->setMouseTracking(true);  // enables hover paint
     m_searchResultsList->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_searchResultsList->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_searchResultsList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);

@@ -67,9 +67,9 @@ public:
     static QString encodeRanges(const QList<QPair<int, int>> &ranges);
     static QList<QPair<int, int>> decodeRanges(const QString &encoded);
 
-    static constexpr int kParentHeight = 36;
-    static constexpr int kChildHeight = 24;
-    static constexpr int kEmptyHeight = 32;
+    static constexpr int kParentHeight = 40;
+    static constexpr int kChildHeight = 26;
+    static constexpr int kEmptyHeight = 36;
 };
 
 #endif // SEARCHRESULTDELEGATE_H

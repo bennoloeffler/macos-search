@@ -1,6 +1,6 @@
 #include "SearchResultDelegate.h"
 
-#include "SwiftUIStyle.h"
+#include "ThemeManager.h"
 
 #include <QApplication>
 #include <QFileInfo>
@@ -8,43 +8,70 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPainter>
+#include <QPainterPath>
 #include <QStringList>
+
+// ============================================================================
+// macOS Big Sur+ visual treatment for the search results list.
+//
+// Apple HIG principles applied here:
+//   - Selection is a subtle accent tint, not a saturated bar. Primary text
+//     stays its default color on the selected row (no white-on-purple).
+//   - Match highlights are a light accent wash + medium weight, not bold +
+//     vivid background. They mark the span without dominating.
+//   - Child rows (content matches) are a light surface with a thin 2 px
+//     accent border, not a dark band. Snippet text is monospace in the
+//     primary color, not white on black.
+//   - Badges are small, low-saturation chips. Score "0" is omitted, score
+//     "1-100" is a tiny accent pill.
+//   - Path text uses Finder's directory/basename hierarchy: parent dirs in
+//     secondary gray, the leaf in primary. Adds visual rhythm at zero cost.
+//   - Subtle 1 px separators between top-level rows replace zebra striping.
+//
+// Colors are direct QColor values — we don't route through SwiftUIStyle's
+// CSS-rgba helpers here because QColor cannot parse the "rgba(...)" form
+// and silently fell back to opaque black (the original "ugly snippet
+// band" regression).
+// ============================================================================
 
 namespace {
 
-constexpr int kScoreBadgeW = 28;
-constexpr int kScoreBadgeH = 18;
-constexpr int kGlyphW = 18;
-constexpr int kLineNoW = 56;
-constexpr int kCountBadgeMinW = 56;
-constexpr int kCountBadgeH = 18;
-constexpr int kChipPad = 6;
+bool isDark() { return ThemeManager::instance()->isDark(); }
 
-QColor matchBgColor()        { return QColor("#e1bee7"); }
-QColor matchFgColor()        { return QColor("#6a1b9a"); }
-QColor matchBgSelectedColor(){ return QColor(255, 255, 255, 96); }
-QColor matchFgSelectedColor(){ return QColor("#ffffff"); }
-QColor selectionColor()      { return QColor(SwiftUIStyle::BrandColor); }
-QColor altRowColor()         { return QColor(0, 0, 0, 6); }
-QColor scoreBgColor()        { return QColor("#f0d9f5"); }
-QColor scoreFgColor()        { return QColor("#6a1b9a"); }
-QColor scoreBgSelectedColor(){ return QColor(255, 255, 255, 60); }
-QColor scoreFgSelectedColor(){ return QColor("#ffffff"); }
-// Extension chip — dark-purple on a light-purple pill so it reads cleanly
-// against any row background. Earlier code passed SwiftUIStyle::chipBackground()
-// (a CSS rgba string like "rgba(0,0,0,0.05)") into QColor() — that parser
-// rejects the rgba form silently and produced an opaque black pill with
-// black text inside. Hardcode the brand purple here.
-QColor chipBgColor()         { return QColor("#e1bee7"); }
-QColor chipFgColor()         { return QColor("#6a1b9a"); }
-QColor pathFgColor()         { return QColor(SwiftUIStyle::primaryTextColor()); }
-QColor pathFgSelectedColor() { return QColor("#ffffff"); }
-QColor lineNoFgColor()       { return QColor(SwiftUIStyle::secondaryTextColor()); }
-QColor childBgColor()        { return QColor(SwiftUIStyle::secondaryBackground()); }
-QColor childBorderColor()    { return QColor(SwiftUIStyle::BrandColor); }
+// ----- Palette --------------------------------------------------------------
 
-// Find every occurrence (case-insensitive) of each space-separated term
-// inside `text`, and return merged sorted ranges of [start, end).
+QColor primaryText()    { return isDark() ? QColor(0xE0,0xE0,0xE0) : QColor(0x1d,0x1d,0x1f); }
+QColor secondaryText()  { return isDark() ? QColor(255,255,255,140) : QColor(0,0,0,128); }
+QColor tertiaryText()   { return isDark() ? QColor(255,255,255,90)  : QColor(0,0,0,90); }
+QColor separator()      { return isDark() ? QColor(255,255,255,18)  : QColor(0,0,0,18); }
+
+QColor brand()          { return QColor(0x9E, 0x38, 0xBE); }
+QColor brandSoft()      { return QColor(0x9E, 0x38, 0xBE, isDark() ? 60 : 38);  }  // ~15% / 24%
+QColor brandSofter()    { return QColor(0x9E, 0x38, 0xBE, isDark() ? 40 : 24);  }  // selection bg
+QColor brandWash()      { return QColor(0x9E, 0x38, 0xBE, isDark() ? 28 : 18);  }  // match highlight
+QColor brandBorder()    { return QColor(0x9E, 0x38, 0xBE, 180); }                  // 2px accent stripe
+
+QColor rowBgHover()     { return isDark() ? QColor(255,255,255,10) : QColor(0,0,0,8); }
+QColor childRowBg()     { return isDark() ? QColor(255,255,255,8)  : QColor(0,0,0,6); }
+QColor chipBg()         { return isDark() ? QColor(255,255,255,18) : QColor(0,0,0,12); }
+
+// ----- Geometry constants ---------------------------------------------------
+
+constexpr int kRowPadLeft  = 14;
+constexpr int kRowPadRight = 14;
+constexpr int kScoreBadgeW = 24;
+constexpr int kScoreBadgeH = 16;
+constexpr int kGlyphW      = 16;
+constexpr int kColumnGap   = 10;
+constexpr int kLineNoW     = 60;
+constexpr int kChildIndent = 56;
+constexpr int kChildBorderInset = 8;
+constexpr int kSnippetSidePad = 8;
+constexpr int kMatchPad    = 3;
+constexpr qreal kCornerR   = 6.0;
+
+// ----- Match-range helper ---------------------------------------------------
+
 QList<QPair<int, int>> matchRangesIn(const QString &text, const QString &query)
 {
     QList<QPair<int, int>> ranges;
@@ -74,50 +101,72 @@ QList<QPair<int, int>> matchRangesIn(const QString &text, const QString &query)
     return merged;
 }
 
-// Draw `text` at (x, y baseline) with the given highlight ranges. Returns the
-// x offset just past the drawn text.
-int drawHighlightedText(QPainter *p, int x, int y, int /*maxW*/,
-                        const QString &text,
+// ----- Apple-style highlighted text drawing ---------------------------------
+
+struct DrawTextOpts {
+    QColor primaryColor;
+    QColor secondaryColor;       // used to dim the directory prefix of a path
+    QColor matchBg;
+    QColor matchFg;
+    int dimUntil = 0;            // chars [0, dimUntil) drawn in secondary color
+};
+
+// Draw `text` at baseline (x, y). Returns the x just past the last drawn
+// character. Highlighted ranges get a subtle background pill, medium font
+// weight, and the brand color.
+int drawHighlightedText(QPainter *p, int x, int y, const QString &text,
                         const QList<QPair<int, int>> &ranges,
-                        const QColor &fgNormal, const QColor &fgHi,
-                        const QColor &bgHi, bool selected)
+                        const DrawTextOpts &opts)
 {
     QFontMetrics fm(p->font());
     int cursor = x;
     int last = 0;
-    auto drawSegment = [&](int from, int to, bool hi) {
+
+    auto draw = [&](int from, int to, bool hi) {
         if (from >= to) return;
         const QString seg = text.mid(from, to - from);
         const int w = fm.horizontalAdvance(seg);
         if (hi) {
-            QRect bgRect(cursor - 1, y - fm.ascent() + 1,
-                         w + 2, fm.height() - 2);
-            p->fillRect(bgRect, bgHi);
-            p->setPen(selected ? matchFgSelectedColor() : fgHi);
-            QFont fbold = p->font();
-            fbold.setBold(true);
+            // Apple-style: rounded subtle accent background, medium weight,
+            // brand color foreground. No saturated bar, no bold.
+            QRectF bgRect(cursor - kMatchPad, y - fm.ascent() + 1,
+                          w + 2 * kMatchPad, fm.height() - 1);
+            QPainterPath pp;
+            pp.addRoundedRect(bgRect, 4, 4);
+            p->fillPath(pp, opts.matchBg);
+
+            QFont weighted = p->font();
+            weighted.setWeight(QFont::Medium);
             const QFont prev = p->font();
-            p->setFont(fbold);
+            p->setFont(weighted);
+            p->setPen(opts.matchFg);
             p->drawText(cursor, y, seg);
             p->setFont(prev);
         } else {
-            p->setPen(fgNormal);
+            // Dim the prefix portion of paths (everything up to the basename)
+            // to give Finder-style visual hierarchy: secondary path,
+            // primary basename.
+            const bool inDimZone = (from < opts.dimUntil);
+            p->setPen(inDimZone ? opts.secondaryColor : opts.primaryColor);
             p->drawText(cursor, y, seg);
         }
         cursor += w;
     };
 
     for (const auto &r : ranges) {
-        drawSegment(last, r.first, /*hi=*/false);
-        drawSegment(r.first, r.second, /*hi=*/true);
+        draw(last, r.first, false);
+        draw(r.first, r.second, true);
         last = r.second;
     }
-    drawSegment(last, static_cast<int>(text.length()), /*hi=*/false);
+    draw(last, static_cast<int>(text.length()), false);
     return cursor;
 }
 
-void drawRoundedPill(QPainter *p, const QRect &rect, const QColor &bg,
-                     const QColor &fg, const QString &text, bool bold = true)
+// ----- Small chip helpers ---------------------------------------------------
+
+void drawChip(QPainter *p, const QRect &rect, const QColor &bg,
+              const QColor &fg, const QString &text,
+              QFont::Weight weight = QFont::Medium)
 {
     p->save();
     p->setRenderHint(QPainter::Antialiasing, true);
@@ -125,12 +174,20 @@ void drawRoundedPill(QPainter *p, const QRect &rect, const QColor &bg,
     p->setBrush(bg);
     p->drawRoundedRect(rect, 4, 4);
     QFont f = p->font();
-    f.setBold(bold);
+    f.setWeight(weight);
     f.setPointSize(qMax(8, f.pointSize() - 2));
     p->setFont(f);
     p->setPen(fg);
     p->drawText(rect, Qt::AlignCenter, text);
     p->restore();
+}
+
+// Split path into (dirPrefix, basename). dirPrefix includes the trailing '/'.
+QPair<QString, QString> splitPath(const QString &path)
+{
+    const int slash = path.lastIndexOf('/');
+    if (slash < 0) return { QString(), path };
+    return { path.left(slash + 1), path.mid(slash + 1) };
 }
 
 }  // anonymous
@@ -155,12 +212,12 @@ QList<QPair<int, int>> SearchResultDelegate::decodeRanges(const QString &encoded
     QList<QPair<int, int>> out;
     if (encoded.isEmpty()) return out;
     const QStringList parts = encoded.split(',', Qt::SkipEmptyParts);
-    for (const QString &p : parts) {
-        const int colon = p.indexOf(':');
+    for (const QString &part : parts) {
+        const int colon = part.indexOf(':');
         if (colon <= 0) continue;
         bool a, b;
-        const int from = p.left(colon).toInt(&a);
-        const int to = p.mid(colon + 1).toInt(&b);
+        const int from = part.left(colon).toInt(&a);
+        const int to = part.mid(colon + 1).toInt(&b);
         if (a && b) out.append({ from, to });
     }
     return out;
@@ -174,17 +231,15 @@ QSize SearchResultDelegate::sizeHint(const QStyleOptionViewItem &option,
     if (kind == Kind::ContentLine || kind == Kind::MoreLine) height = kChildHeight;
     else if (kind == Kind::Empty) height = kEmptyHeight;
 
-    // Width: prefer the natural content width so the list-view contentsSize
-    // reflects the actual row width (gives us a horizontal scrollbar when
-    // paths exceed the viewport).
     QFontMetrics fm(option.font);
     const QString path = index.data(PathRole).toString();
     const QString snippet = index.data(SnippetRole).toString();
     const QString text = !snippet.isEmpty() ? snippet : path;
-    int width = 24 + kScoreBadgeW + 6 + kGlyphW + 6
-                + fm.horizontalAdvance(text) + 32;
+    int width = kRowPadLeft + kScoreBadgeW + kColumnGap + kGlyphW + kColumnGap
+                + fm.horizontalAdvance(text) + 100 + kRowPadRight;
     if (kind == Kind::ContentLine) {
-        width = 64 + kLineNoW + 10 + fm.horizontalAdvance(snippet) + 24;
+        width = kChildIndent + kLineNoW + kSnippetSidePad
+                + fm.horizontalAdvance(snippet) + kRowPadRight;
     }
     return QSize(width, height);
 }
@@ -203,165 +258,208 @@ void SearchResultDelegate::paint(QPainter *p,
 {
     const Kind kind = static_cast<Kind>(index.data(KindRole).toInt());
     const bool selected = (option.state & QStyle::State_Selected);
+    const bool hovered  = (option.state & QStyle::State_MouseOver);
 
     QRect rect = option.rect;
     p->save();
     p->setClipRect(rect);
     p->setRenderHint(QPainter::Antialiasing, true);
+    p->setRenderHint(QPainter::TextAntialiasing, true);
 
-    // --- background ----------------------------------------------------------
+    // -------- background ----------------------------------------------------
     if (kind == Kind::ContentLine) {
-        // Soft brand-tinted bg + left brand-color border to group child rows
-        // under their parent file row.
-        p->fillRect(rect, selected ? selectionColor() : childBgColor());
-        QRect border = rect; border.setWidth(2);
-        p->fillRect(border, childBorderColor());
+        // Child snippet rows: subtle surface tint + thin accent border on
+        // the left. NOT a dark band — that was the regression that made
+        // the earlier design feel like a terminal embedded in a Mac app.
+        QRect bgRect = rect.adjusted(kChildBorderInset, 1,
+                                     -kChildBorderInset, -1);
+        QPainterPath bg;
+        bg.addRoundedRect(bgRect, 4, 4);
+        p->fillPath(bg, selected ? brandSofter() : childRowBg());
+        QRect border = bgRect;
+        border.setWidth(2);
+        p->fillRect(border, brandBorder());
     } else if (kind == Kind::MoreLine || kind == Kind::Empty) {
-        p->fillRect(rect, selected ? selectionColor() : Qt::transparent);
-    } else {
-        // Parent rows: rounded rect when selected, alt-row stripe otherwise.
         if (selected) {
-            QRect r = rect.adjusted(4, 2, -4, -2);
-            p->setPen(Qt::NoPen);
-            p->setBrush(selectionColor());
-            p->drawRoundedRect(r, 6, 6);
-        } else if (index.row() % 2 == 1) {
-            p->fillRect(rect, altRowColor());
+            QRect r = rect.adjusted(8, 2, -8, -2);
+            QPainterPath pp; pp.addRoundedRect(r, kCornerR, kCornerR);
+            p->fillPath(pp, brandSofter());
+        }
+    } else {
+        // Parent rows. Rounded subtle wash on selection / hover, hairline
+        // separator on the bottom edge (Apple Finder pattern).
+        if (selected) {
+            QRect r = rect.adjusted(8, 2, -8, -2);
+            QPainterPath pp; pp.addRoundedRect(r, kCornerR, kCornerR);
+            p->fillPath(pp, brandSofter());
+        } else if (hovered) {
+            QRect r = rect.adjusted(8, 2, -8, -2);
+            QPainterPath pp; pp.addRoundedRect(r, kCornerR, kCornerR);
+            p->fillPath(pp, rowBgHover());
+        }
+        // Bottom hairline separator — invisible behind the highlighted row,
+        // visible between rows. Real macOS lists do this.
+        if (!selected) {
+            p->setPen(separator());
+            const int x1 = rect.left() + kRowPadLeft;
+            const int x2 = rect.right() - kRowPadRight;
+            const int y  = rect.bottom();
+            p->drawLine(x1, y, x2, y);
         }
     }
 
-    // --- font baseline -------------------------------------------------------
     p->setFont(option.font);
     QFontMetrics fm(option.font);
     const int baseline = rect.center().y() + (fm.ascent() - fm.descent()) / 2;
 
-    // --- Empty / More content ------------------------------------------------
+    // -------- Empty -----------------------------------------------------
     if (kind == Kind::Empty) {
         QFont f = option.font;
         f.setItalic(true);
         p->setFont(f);
-        p->setPen(QColor(SwiftUIStyle::secondaryTextColor()));
-        p->drawText(rect.adjusted(16, 0, -16, 0), Qt::AlignVCenter | Qt::AlignLeft,
+        p->setPen(secondaryText());
+        p->drawText(rect.adjusted(kRowPadLeft + 4, 0, -kRowPadRight, 0),
+                    Qt::AlignVCenter | Qt::AlignLeft,
                     index.data(PathRole).toString());
         p->restore();
         return;
     }
+
+    // -------- More ------------------------------------------------------
     if (kind == Kind::MoreLine) {
         QFont f = option.font;
         f.setItalic(true);
         p->setFont(f);
-        p->setPen(QColor(SwiftUIStyle::secondaryTextColor()));
+        p->setPen(tertiaryText());
         const int n = index.data(MoreCountRole).toInt();
-        const QString text = QObject::tr("    + %1 more matches").arg(n);
-        p->drawText(rect.adjusted(64, 0, -16, 0),
+        const QString text = QObject::tr("+ %1 more matches").arg(n);
+        p->drawText(rect.adjusted(kChildIndent + kLineNoW + kSnippetSidePad,
+                                  0, -kRowPadRight, 0),
                     Qt::AlignVCenter | Qt::AlignLeft, text);
         p->restore();
         return;
     }
 
-    // --- Content-match child row --------------------------------------------
+    // -------- Content-match child row -----------------------------------
     if (kind == Kind::ContentLine) {
         const int line = index.data(LineRole).toInt();
         const QString snippet = index.data(SnippetRole).toString();
         const int hlStart = index.data(SnippetHlStartRole).toInt();
         const int hlEnd = index.data(SnippetHlEndRole).toInt();
 
-        // Line number column (right-aligned, dim, monospace).
+        // Line number — right-aligned dim monospace.
         QFont mono = option.font;
-        mono.setFamily("SF Mono");
-        if (!QFontInfo(mono).fixedPitch()) mono.setFamily("Menlo");
+        mono.setFamily(QStringLiteral("SF Mono"));
+        if (!QFontInfo(mono).fixedPitch()) mono.setFamily(QStringLiteral("Menlo"));
         mono.setPointSize(qMax(9, option.font.pointSize() - 1));
         p->setFont(mono);
         QFontMetrics monoFm(mono);
-        p->setPen(lineNoFgColor());
-        QRect lineNoRect(rect.left() + 8, rect.top(), kLineNoW, rect.height());
+        p->setPen(tertiaryText());
+        QRect lineNoRect(rect.left() + kChildIndent - kLineNoW + 8, rect.top(),
+                         kLineNoW, rect.height());
         p->drawText(lineNoRect, Qt::AlignVCenter | Qt::AlignRight,
                     QString::number(line));
 
-        // Snippet with single highlight span.
+        // Snippet with subtle accent highlight on the matched span.
         QList<QPair<int, int>> ranges;
         if (hlStart >= 0 && hlEnd > hlStart) ranges.append({ hlStart, hlEnd });
-        const int snippetX = rect.left() + 8 + kLineNoW + 10;
+        const int snippetX = rect.left() + kChildIndent + kSnippetSidePad;
         const int snippetBaseline = rect.center().y()
                                     + (monoFm.ascent() - monoFm.descent()) / 2;
-        drawHighlightedText(p, snippetX, snippetBaseline,
-                            rect.right() - snippetX,
-                            snippet, ranges,
-                            selected ? matchFgSelectedColor() : pathFgColor(),
-                            matchFgColor(),
-                            selected ? matchBgSelectedColor() : matchBgColor(),
-                            selected);
+        DrawTextOpts opts;
+        opts.primaryColor = primaryText();
+        opts.secondaryColor = primaryText();
+        opts.matchBg = brandWash();
+        opts.matchFg = brand();
+        drawHighlightedText(p, snippetX, snippetBaseline, snippet, ranges, opts);
         p->restore();
         return;
     }
 
-    // --- Folder / File row ---------------------------------------------------
+    // -------- Folder / File parent row ----------------------------------
     const QString path = index.data(PathRole).toString();
     const int score = index.data(ScoreRole).toInt();
     const QString query = index.data(QueryRole).toString();
     const QString ext = index.data(ExtRole).toString();
     const int matchCount = index.data(MatchCountRole).toInt();
 
-    int cursorX = rect.left() + 12;
+    int cursorX = rect.left() + kRowPadLeft;
 
-    // Score badge — omit when score==0 (rendering "0" was confusing).
+    // Score badge — subtle, only when score > 0.
     if (score > 0) {
         QRect badgeRect(cursorX, rect.center().y() - kScoreBadgeH / 2,
                         kScoreBadgeW, kScoreBadgeH);
-        drawRoundedPill(p, badgeRect,
-                        selected ? scoreBgSelectedColor() : scoreBgColor(),
-                        selected ? scoreFgSelectedColor() : scoreFgColor(),
-                        QString::number(score));
+        drawChip(p, badgeRect, brandSoft(), brand(), QString::number(score),
+                 QFont::DemiBold);
     }
-    cursorX += kScoreBadgeW + 6;
+    cursorX += kScoreBadgeW + kColumnGap;
 
-    // Glyph (text emoji)
-    const QString glyph = (kind == Kind::Folder) ? QStringLiteral("📁")
-                                                 : QStringLiteral("📄");
-    p->setPen(selected ? pathFgSelectedColor() : pathFgColor());
-    p->drawText(QRect(cursorX, rect.top(), kGlyphW, rect.height()),
-                Qt::AlignVCenter | Qt::AlignLeft, glyph);
-    cursorX += kGlyphW + 6;
+    // Kind glyph — text emoji at standard size. macOS HIG would prefer real
+    // icons; we stay with emoji to avoid asset dependencies, but smaller and
+    // dimmer so they don't compete with the path.
+    {
+        QFont gf = option.font;
+        gf.setPointSize(option.font.pointSize());
+        p->setFont(gf);
+        p->setPen(secondaryText());
+        const QString glyph = (kind == Kind::Folder) ? QStringLiteral("􀈕")
+                                                     : QStringLiteral("􀈷");
+        // SF Symbols private-use codepoints fall back gracefully to text
+        // emoji on systems without the SF Pro Symbols font:
+        const QString fallback = (kind == Kind::Folder) ? QStringLiteral("📁")
+                                                        : QStringLiteral("📄");
+        const bool hasSymbols = QFontMetrics(gf).inFont(glyph.at(0));
+        p->drawText(QRect(cursorX, rect.top(), kGlyphW, rect.height()),
+                    Qt::AlignVCenter | Qt::AlignLeft,
+                    hasSymbols ? glyph : fallback);
+        p->setFont(option.font);
+    }
+    cursorX += kGlyphW + kColumnGap;
 
-    // Path with highlights.
+    // Path with directory/basename hierarchy and match highlighting.
     const QList<QPair<int, int>> ranges = matchRangesIn(path, query);
-    cursorX = drawHighlightedText(p, cursorX, baseline,
-                                  rect.right() - cursorX,
-                                  path, ranges,
-                                  selected ? pathFgSelectedColor() : pathFgColor(),
-                                  matchFgColor(),
-                                  selected ? matchBgSelectedColor() : matchBgColor(),
-                                  selected);
+    const auto split = splitPath(path);
+    const int dimUntil = static_cast<int>(split.first.length());
+    DrawTextOpts opts;
+    opts.primaryColor = primaryText();
+    opts.secondaryColor = secondaryText();
+    opts.matchBg = brandWash();
+    opts.matchFg = brand();
+    opts.dimUntil = dimUntil;
+    cursorX = drawHighlightedText(p, cursorX, baseline, path, ranges, opts);
 
-    // Extension chip (files only).
+    // Extension chip (files only) — tiny, secondary.
     if (kind == Kind::File && !ext.isEmpty()) {
-        cursorX += 6;
+        cursorX += kColumnGap;
         QFont chipFont = option.font;
         chipFont.setPointSize(qMax(8, option.font.pointSize() - 3));
         QFontMetrics chipFm(chipFont);
         const QString chipText = "." + ext;
-        const int chipW = chipFm.horizontalAdvance(chipText) + 2 * kChipPad;
-        QRect chipRect(cursorX, rect.center().y() - kCountBadgeH / 2,
-                       chipW, kCountBadgeH);
-        drawRoundedPill(p, chipRect, chipBgColor(),
-                        selected ? matchFgSelectedColor() : chipFgColor(),
-                        chipText, /*bold=*/false);
+        const int chipW = chipFm.horizontalAdvance(chipText) + 12;
+        QRect chipRect(cursorX, rect.center().y() - 8, chipW, 16);
+        const QFont prev = p->font();
+        p->setFont(chipFont);
+        drawChip(p, chipRect, chipBg(), tertiaryText(), chipText, QFont::Medium);
+        p->setFont(prev);
         cursorX += chipW;
     }
 
-    // Match-count badge (right-aligned).
+    // Match-count badge — right-aligned, secondary chip.
     if (matchCount > 0) {
-        const QString text = QObject::tr("%1 match%2")
-                                 .arg(matchCount)
-                                 .arg(matchCount == 1 ? "" : "es");
+        const QString text = (matchCount == 1)
+                                ? QObject::tr("1 match")
+                                : QObject::tr("%1 matches").arg(matchCount);
         QFont badgeFont = option.font;
-        badgeFont.setPointSize(qMax(8, option.font.pointSize() - 2));
+        badgeFont.setPointSize(qMax(9, option.font.pointSize() - 1));
+        badgeFont.setWeight(QFont::Medium);
         QFontMetrics badgeFm(badgeFont);
-        const int w = qMax(kCountBadgeMinW, badgeFm.horizontalAdvance(text) + 16);
-        QRect badgeRect(cursorX + 8, rect.center().y() - kCountBadgeH / 2,
-                        w, kCountBadgeH);
-        drawRoundedPill(p, badgeRect, selectionColor(),
-                        QColor("#ffffff"), text);
+        const int w = badgeFm.horizontalAdvance(text) + 16;
+        QRect badgeRect(rect.right() - kRowPadRight - w,
+                        rect.center().y() - 9, w, 18);
+        const QFont prev = p->font();
+        p->setFont(badgeFont);
+        drawChip(p, badgeRect, brandSoft(), brand(), text, QFont::Medium);
+        p->setFont(prev);
     }
 
     p->restore();
