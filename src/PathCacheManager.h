@@ -138,6 +138,15 @@ public:
     /// today's soft limit (still bounded by the hard ceiling).
     void expandToUser(const QString &rootPath);
 
+    /// True if `path` is in the completed-roots set or descends from one.
+    /// Used by the per-path scan-state indicators.
+    bool isPathScanned(const QString &path) const;
+
+    /// True if a scan is currently in progress AND `path` falls under its
+    /// active root. (Background-favorite scans broadcast their root via
+    /// the same mechanism, so all in-flight scans contribute.)
+    bool isPathScanning(const QString &path) const;
+
 signals:
     void folderCapReachedSignal();
     void folderCeilingReachedSignal();
@@ -164,6 +173,9 @@ private:
 
     // Track completed scan roots to avoid re-scanning
     QSet<QString> m_completedRoots;
+    // The root of the currently in-flight scan (empty if none). Used by
+    // isPathScanning() so per-path indicators can flip to Scanning state.
+    QString m_currentScanRoot;
 
     // Singleton instance
     static PathCacheManager *s_instance;

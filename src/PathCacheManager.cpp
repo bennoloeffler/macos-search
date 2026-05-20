@@ -77,6 +77,30 @@ void PathCacheManager::expandToUser(const QString &rootPath)
     expandTo(rootPath);
 }
 
+bool PathCacheManager::isPathScanned(const QString &path) const
+{
+    if (path.isEmpty()) return false;
+    const QString clean = QDir::cleanPath(path);
+    QMutexLocker locker(&m_mutex);
+    for (const QString &root : m_completedRoots) {
+        if (clean == root || clean.startsWith(root + QLatin1Char('/'))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PathCacheManager::isPathScanning(const QString &path) const
+{
+    if (path.isEmpty() || !isScanning()) return false;
+    const QString clean = QDir::cleanPath(path);
+    QMutexLocker locker(&m_mutex);
+    const QString root = m_currentScanRoot;
+    if (root.isEmpty()) return false;
+    return clean == root || clean.startsWith(root + QLatin1Char('/'))
+           || root.startsWith(clean + QLatin1Char('/'));
+}
+
 PathCacheManager::~PathCacheManager()
 {
     stopScan();
@@ -112,6 +136,10 @@ void PathCacheManager::startScan()
     m_foldersIndexed.storeRelease(0);
     m_foldersExcluded.storeRelease(0);
     m_watcherLimitReached = false;
+    {
+        QMutexLocker locker(&m_mutex);
+        m_currentScanRoot = QDir::homePath();
+    }
 
     emit scanStarted();
 
@@ -273,6 +301,7 @@ void PathCacheManager::restartScanFrom(const QString &rootPath)
     {
         QMutexLocker locker(&m_mutex);
         m_completedRoots.remove(normalizedRoot);
+        m_currentScanRoot = normalizedRoot;
     }
 
     m_scanning.storeRelease(1);
@@ -409,6 +438,10 @@ void PathCacheManager::expandTo(const QString &rootPath)
     {
         QMutexLocker locker(&m_queueMutex);
         m_scanQueue.clear();
+    }
+    {
+        QMutexLocker locker(&m_mutex);
+        m_currentScanRoot = normalizedRoot;
     }
 
     m_scanning.storeRelease(1);

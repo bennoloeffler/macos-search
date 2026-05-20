@@ -12,6 +12,7 @@
 #include "PathSelector/PathSelector.h"
 #include "PreferencesDialog.h"
 #include "RipgrepRunner.h"
+#include "ScanStateIndicator.h"
 #include "SearchResultDelegate.h"
 #include "SwiftUIStyle.h"
 #include <QAction>
@@ -82,7 +83,7 @@ FolderBrowserDialog::FolderBrowserDialog(const QString &initialDir, QWidget *par
 
     updateCacheStatusLabel();
     updateContentFieldState();
-    updateScanHereButtonState();
+    refreshScanStateIndicators();
 }
 
 FolderBrowserDialog::~FolderBrowserDialog()
@@ -477,13 +478,15 @@ void FolderBrowserDialog::setupUi()
     m_mainLayout = body;
 
     // === SEARCH IN: Root path filter ===
+    // The whole field — PathSelector + inline scan-state indicator — lives
+    // inside one styled QFrame so they look like a single input matching
+    // the soft-rounded "Search for:" and "Inside contents:" rows below.
     m_rootContainer = new QWidget(this);
     m_rootContainer->setObjectName("rootContainer");
     auto *rootLayout = new QHBoxLayout(m_rootContainer);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(SwiftUIStyle::SpacingSmall);
 
-    // Label with fixed width for alignment
     QLabel *rootLabel = new QLabel(tr("Search in:"), this);
     rootLabel->setObjectName("rootLabel");
     rootLabel->setFixedWidth(96);
@@ -492,32 +495,34 @@ void FolderBrowserDialog::setupUi()
         "color: rgba(0,0,0,0.55); font-size: 12px; font-weight: 500;");
     rootLayout->addWidget(rootLabel);
 
-    // PathSelector widget (handles all path completion logic)
+    // Combined field container — provides the rounded gray frame that
+    // visually matches Search-for and Inside-contents.
+    auto *pathFieldFrame = new QFrame(this);
+    pathFieldFrame->setObjectName("pathFieldFrame");
+    // Note: Qt stylesheets don't support :focus-within. We rely on the
+    // PathSelector's internal QLineEdit's :focus border (which is still
+    // styled by PathSelectorUI) for the active-state feedback.
+    pathFieldFrame->setStyleSheet(
+        "QFrame#pathFieldFrame { background: rgba(0,0,0,0.03); "
+        "border: 1px solid rgba(0,0,0,0.10); border-radius: 8px; }");
+    auto *pathFrameLayout = new QHBoxLayout(pathFieldFrame);
+    pathFrameLayout->setContentsMargins(2, 2, 6, 2);
+    pathFrameLayout->setSpacing(6);
+
     m_pathSelector = new PathSelector(this);
     m_pathSelector->setObjectName("pathSelector");
     m_pathSelector->setPath(QDir::homePath());
-    rootLayout->addWidget(m_pathSelector, 1);
+    pathFrameLayout->addWidget(m_pathSelector, 1);
 
-    // "Scan now" — compact secondary button matching the toolbar visual
-    // weight. Cap auto-raises via expandToUser() so this deliberate click
-    // can grow the index past today's soft limit.
-    m_scanHereButton = new QPushButton(tr("Scan now"), this);
-    m_scanHereButton->setObjectName("scanHereButton");
-    m_scanHereButton->setCursor(Qt::PointingHandCursor);
-    m_scanHereButton->setFlat(true);
-    m_scanHereButton->setFixedHeight(26);
-    m_scanHereButton->setStyleSheet(QStringLiteral(
-        "QPushButton { padding: 0 14px; border: 1px solid rgba(0,0,0,0.12); "
-        "background: white; color: rgba(0,0,0,0.78); font-size: 12px; "
-        "font-weight: 500; border-radius: 6px; }"
-        "QPushButton:hover:enabled { background: rgba(0,0,0,0.04); "
-        "border-color: rgba(0,0,0,0.18); }"
-        "QPushButton:pressed:enabled { background: rgba(0,0,0,0.08); }"
-        "QPushButton:disabled { color: rgba(0,0,0,0.35); "
-        "background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.08); }"));
-    rootLayout->addWidget(m_scanHereButton);
-    connect(m_scanHereButton, &QPushButton::clicked,
-            this, &FolderBrowserDialog::onScanHereClicked);
+    // Inline scan-state indicator — sits in the same rounded frame as the
+    // path input on the right. Replaces the old standalone "Scan now" button.
+    m_searchInIndicator = new ScanStateIndicator(this);
+    m_searchInIndicator->setObjectName("searchInIndicator");
+    pathFrameLayout->addWidget(m_searchInIndicator);
+    connect(m_searchInIndicator, &ScanStateIndicator::scanRequested,
+            this, &FolderBrowserDialog::onScanRequested);
+
+    rootLayout->addWidget(pathFieldFrame, 1);
 
     m_mainLayout->addWidget(m_rootContainer);
 
@@ -1225,7 +1230,7 @@ void FolderBrowserDialog::onShowHiddenToggled(bool checked)
 void FolderBrowserDialog::onCacheStatusChanged()
 {
     updateCacheStatusLabel();
-    updateScanHereButtonState();
+    refreshScanStateIndicators();
 }
 
 void FolderBrowserDialog::updateCacheStatusLabel()
@@ -1429,56 +1434,51 @@ void FolderBrowserDialog::onPathSelectorChanged(const QString &path)
 {
     // PathSelector handles validation, so we can use the path directly
     setRootPath(path);
-    updateScanHereButtonState();
+    refreshScanStateIndicators();
 }
 
-void FolderBrowserDialog::onScanHereClicked()
+void FolderBrowserDialog::onScanRequested(const QString &path)
 {
-    const QString path = m_rootPath.isEmpty()
-                             ? QDir::homePath()
-                             : QDir::cleanPath(m_rootPath);
-    if (path.isEmpty() || !QDir(path).exists()) return;
-
-    PathCacheManager::instance()->expandToUser(path);
-    updateScanHereButtonState();
+    // Path may come from the search-in indicator (current root) or from a
+    // favorite-row indicator. In either case: trigger expandToUser, which
+    // bumps caps + queues the scan. Indicators re-derive their state from
+    // PathCacheManager signals.
+    const QString target = path.isEmpty() ? m_rootPath : path;
+    const QString clean = target.isEmpty() ? QDir::homePath()
+                                           : QDir::cleanPath(target);
+    if (clean.isEmpty() || !QDir(clean).exists()) return;
+    PathCacheManager::instance()->expandToUser(clean);
+    refreshScanStateIndicators();
 }
 
-void FolderBrowserDialog::updateScanHereButtonState()
+void FolderBrowserDialog::refreshScanStateIndicators()
 {
-    if (!m_scanHereButton) return;
-    const QString path = m_rootPath.isEmpty()
-                             ? QDir::homePath()
-                             : QDir::cleanPath(m_rootPath);
+    auto stateFor = [](const QString &path) {
+        auto *c = PathCacheManager::instance();
+        if (c->isPathScanning(path)) return ScanStateIndicator::State::Scanning;
+        if (c->isPathScanned(path))  return ScanStateIndicator::State::Scanned;
+        return ScanStateIndicator::State::Idle;
+    };
 
-    if (path.isEmpty() || !QDir(path).exists()) {
-        m_scanHereButton->setEnabled(false);
-        m_scanHereButton->setText(tr("Scan now"));
-        m_scanHereButton->setToolTip(tr("Path doesn't exist"));
-        return;
+    if (m_searchInIndicator) {
+        const QString p = m_rootPath.isEmpty()
+                              ? QDir::homePath()
+                              : QDir::cleanPath(m_rootPath);
+        m_searchInIndicator->setRepresentedPath(p);
+        m_searchInIndicator->setState(stateFor(p));
     }
 
-    const bool alreadyIndexed = PathCacheManager::instance()
-                                    ->cachedPaths()
-                                    .contains(path);
-
-    if (alreadyIndexed) {
-        m_scanHereButton->setEnabled(false);
-        m_scanHereButton->setText(tr("Indexed"));
-        m_scanHereButton->setToolTip(
-            tr("This folder is already in the index. Use Preferences → "
-               "Rebuild index to refresh."));
-        return;
-    }
-
-    m_scanHereButton->setEnabled(true);
-    m_scanHereButton->setText(tr("Scan now"));
-    if (!FileCacheManager::isUnderHome(path)) {
-        m_scanHereButton->setToolTip(
-            tr("Add this folder to the index — folders only "
-               "(files are indexed in your home folder)."));
-    } else {
-        m_scanHereButton->setToolTip(
-            tr("Add this folder and its contents to the search index."));
+    // Per-favorite indicators are stored as item-widget children of each
+    // QListWidgetItem in m_favoritesList; update them in lockstep.
+    if (m_favoritesList) {
+        for (int i = 0; i < m_favoritesList->count(); ++i) {
+            QListWidgetItem *item = m_favoritesList->item(i);
+            QWidget *w = m_favoritesList->itemWidget(item);
+            if (!w) continue;
+            auto *dot = w->findChild<ScanStateIndicator *>("favIndicator");
+            if (!dot) continue;
+            dot->setState(stateFor(dot->representedPath()));
+        }
     }
 }
 
@@ -1654,17 +1654,52 @@ void FolderBrowserDialog::rebuildFavoritesList()
     const QString effectiveDefault = m_defaultFavorite.isEmpty() ? home : m_defaultFavorite;
 
     auto addItem = [&](const QString &label, const QString &path, bool isHome) {
-        auto *item = new QListWidgetItem(label, m_favoritesList);
+        auto *item = new QListWidgetItem(m_favoritesList);
         item->setData(kFavoritePathRole, path);
         item->setData(kFavoriteIsHomeRole, isHome);
         item->setToolTip(path);
-        // The default favorite is shown bold (no leading bubble — the bold
-        // weight is the affordance). Everything else is normal weight.
+
+        // Custom row widget: [label, stretch, mini scan-state indicator].
+        // Home gets no indicator — it's effectively always covered by the
+        // startup $HOME scan, so a permanent green dot would be visual noise.
+        auto *row = new QWidget(m_favoritesList);
+        row->setAttribute(Qt::WA_TranslucentBackground);
+        auto *rowLay = new QHBoxLayout(row);
+        rowLay->setContentsMargins(0, 0, 0, 0);
+        rowLay->setSpacing(8);
+
+        auto *labelW = new QLabel(label, row);
+        labelW->setObjectName("favLabel");
+        QFont f = labelW->font();
         if (QDir::cleanPath(path) == QDir::cleanPath(effectiveDefault)) {
-            QFont f = item->font();
             f.setBold(true);
+            // Also set the item's font so existing tests that check
+            // item->font().bold() keep working — the visible bold weight
+            // is owned by the inner label, but the item is the public
+            // "is this row the default" predicate for tests.
             item->setFont(f);
         }
+        labelW->setFont(f);
+        labelW->setStyleSheet("background: transparent;");
+        rowLay->addWidget(labelW, 1);
+
+        if (!isHome) {
+            auto *dot = new ScanStateIndicator(row);
+            dot->setObjectName("favIndicator");
+            dot->setCompact(true);
+            dot->setRepresentedPath(path);
+            // Initial state derived once; refreshScanStateIndicators() keeps
+            // it in sync on every signal.
+            auto *cache = PathCacheManager::instance();
+            if (cache->isPathScanning(path))      dot->setState(ScanStateIndicator::State::Scanning);
+            else if (cache->isPathScanned(path))  dot->setState(ScanStateIndicator::State::Scanned);
+            connect(dot, &ScanStateIndicator::scanRequested,
+                    this, &FolderBrowserDialog::onScanRequested);
+            rowLay->addWidget(dot);
+        }
+
+        item->setSizeHint(QSize(0, 30));
+        m_favoritesList->setItemWidget(item, row);
     };
 
     addItem(tr("Home"), home, /*isHome=*/true);

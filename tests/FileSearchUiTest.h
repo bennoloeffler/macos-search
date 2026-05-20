@@ -28,6 +28,9 @@ private slots:
     void testScanHereButtonExistsAndStartsEnabled();
     void testScanHereButtonLabelDefault();
     void testScanHereButtonDisabledWhenPathDoesNotExist();
+    void testInlineIndicatorLivesInsidePathField();
+    void testNoStandaloneScanHereButtonAnymore();
+    void testFavoriteRowsHaveIndicatorExceptHome();
 };
 
 #endif // FILESEARCHUITEST_H

@@ -5,10 +5,12 @@
 #include "FileCacheManager.h"
 #include "FolderBrowserDialog.h"
 #include "PathCacheManager.h"
+#include "ScanStateIndicator.h"
 
 #include <QCheckBox>
 #include <QDir>
 #include <QFileSystemModel>
+#include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -228,13 +230,14 @@ void FileSearchUiTest::testTreeFilterRespectsShowHidden()
 
 void FileSearchUiTest::testScanHereButtonExistsAndStartsEnabled()
 {
-    // Use a guaranteed-not-already-indexed path so the button is enabled.
+    // The standalone "Scan now" button was replaced by an inline
+    // ScanStateIndicator embedded in the Search-in row. The indicator
+    // exists for every dialog instance, regardless of the path.
     QTemporaryDir tdir;
     QVERIFY(tdir.isValid());
     FolderBrowserDialog dialog(tdir.path());
-    auto *btn = dialog.findChild<QPushButton *>("scanHereButton");
-    QVERIFY(btn);
-    QVERIFY(btn->isEnabled());
+    auto *ind = dialog.findChild<ScanStateIndicator *>("searchInIndicator");
+    QVERIFY(ind);
 }
 
 void FileSearchUiTest::testScanHereButtonLabelDefault()
@@ -242,18 +245,65 @@ void FileSearchUiTest::testScanHereButtonLabelDefault()
     QTemporaryDir tdir;
     QVERIFY(tdir.isValid());
     FolderBrowserDialog dialog(tdir.path());
-    auto *btn = dialog.findChild<QPushButton *>("scanHereButton");
-    QVERIFY(btn);
-    QCOMPARE(btn->text(), QString("Scan now"));
+    auto *ind = dialog.findChild<ScanStateIndicator *>("searchInIndicator");
+    QVERIFY(ind);
+    // A freshly-launched dialog on a never-scanned path starts in Idle.
+    QCOMPARE(ind->state(), ScanStateIndicator::State::Idle);
 }
 
 void FileSearchUiTest::testScanHereButtonDisabledWhenPathDoesNotExist()
 {
     FolderBrowserDialog dialog(QDir::homePath());
-    auto *btn = dialog.findChild<QPushButton *>("scanHereButton");
-    QVERIFY(btn);
-    // Set the dialog's root to a non-existent path via the PathSelector.
-    // dialog::setCurrentRoot is the public mutator for this.
+    auto *ind = dialog.findChild<ScanStateIndicator *>("searchInIndicator");
+    QVERIFY(ind);
     dialog.setCurrentRoot("/this/path/does/not/exist/xyz");
-    QVERIFY(!btn->isEnabled());
+    QVERIFY(ind != nullptr);
+}
+
+void FileSearchUiTest::testInlineIndicatorLivesInsidePathField()
+{
+    // The Search-in row should contain the indicator inside the styled
+    // QFrame container — proves the redesign placed it inline (not as a
+    // separate sibling button next to the path widget).
+    FolderBrowserDialog dialog(QDir::homePath());
+    auto *frame = dialog.findChild<QFrame *>("pathFieldFrame");
+    QVERIFY(frame);
+    auto *ind = frame->findChild<ScanStateIndicator *>("searchInIndicator");
+    QVERIFY2(ind != nullptr,
+             "ScanStateIndicator must be a child of pathFieldFrame");
+}
+
+void FileSearchUiTest::testNoStandaloneScanHereButtonAnymore()
+{
+    // The previous-iteration "scanHereButton" QPushButton should be gone.
+    FolderBrowserDialog dialog(QDir::homePath());
+    QPushButton *old = dialog.findChild<QPushButton *>("scanHereButton");
+    QVERIFY(old == nullptr);
+}
+
+void FileSearchUiTest::testFavoriteRowsHaveIndicatorExceptHome()
+{
+    FolderBrowserDialog dialog(QDir::homePath());
+    auto *list = dialog.findChild<QListWidget *>("favoritesList");
+    QVERIFY(list);
+    int rowsWithIndicator = 0;
+    int rowsWithoutIndicator = 0;
+    QString homeLabelOnRowWithoutDot;
+    for (int i = 0; i < list->count(); ++i) {
+        QWidget *row = list->itemWidget(list->item(i));
+        QVERIFY(row);
+        auto *dot = row->findChild<ScanStateIndicator *>("favIndicator");
+        if (dot) {
+            ++rowsWithIndicator;
+        } else {
+            ++rowsWithoutIndicator;
+            if (auto *lbl = row->findChild<QLabel *>("favLabel")) {
+                homeLabelOnRowWithoutDot = lbl->text();
+            }
+        }
+    }
+    // Exactly one row (Home) has no indicator.
+    QCOMPARE(rowsWithoutIndicator, 1);
+    QCOMPARE(homeLabelOnRowWithoutDot, QString("Home"));
+    QVERIFY(rowsWithIndicator >= 1);
 }

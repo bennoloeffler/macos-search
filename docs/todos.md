@@ -361,6 +361,40 @@ or hiding) effectively ends the session. Two paths used to call
   `SearchResultModel.{cpp,h}` (the app's top-level is
   `FolderBrowserDialog` directly).
 
+### Scan-state indicator — follow-ups (2026-05-20)
+
+- [ ] **Fourth state: "Queued — scan now?"** — when a path is on the
+  background scan queue (e.g. a favorite that hasn't reached its turn
+  in `ScanScheduler::onScanComplete` chaining yet) but not yet being
+  walked, the indicator currently shows Idle. Better UX would be a
+  fourth state that reads `Indexing soon · scan now` and lets the user
+  jump the queue. The indicator widget already has the form factor;
+  this is a new `State::Queued` enum + a `PathCacheManager::isPathQueued()`
+  accessor + scheduler integration to broadcast "what's next" info.
+
+- [ ] **Re-prioritize an in-flight scan when the user clicks "Scan now"
+  on a subtree of the active root.** Today `expandToUser(subpath)` is
+  a no-op if `subpath` is descended from the active scan's root —
+  the scan worker will reach it eventually. The user's question: can
+  we hoist that subtree to the front of the BFS queue so it lands in
+  the cache sooner?
+
+  **Sketch:** the scan queue is `QQueue<QString>` (FIFO). To re-prio,
+  add a `QQueue<QString> m_priorityQueue` that the worker drains first.
+  `expandToUserSubtree(path)` appends `path` to the priority queue
+  (and any siblings of `path`'s ancestors on the way down, so the BFS
+  doesn't have to walk through unrelated branches first).
+
+  **Risks:** (a) the worker is the only writer to the queue today;
+  a second queue means more locking. Doable but care needed. (b) the
+  cache's "already in pathSet" dedup still works, so a re-prio queue
+  doesn't create duplicates. (c) the user's mental model is fine —
+  "yes, scanning that — but bump this part to the front".
+
+  Verdict: worth doing, ~half day, depends on the Queued state above
+  for the right UX (the indicator can show "Indexing soon · scan now"
+  then flip directly to "Scanning" when the priority bump takes effect).
+
 ---
 
 ## Decisions already made (no longer open)

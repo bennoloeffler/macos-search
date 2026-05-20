@@ -23,6 +23,7 @@ class ContentSearchSettings;
 class RipgrepRunner;
 class PathSelector;
 class GlobalHotkey;
+class ScanStateIndicator;
 struct ContentMatch;
 
 class FolderBrowserDialog : public QDialog
@@ -77,8 +78,8 @@ private slots:
     void onCacheStatusChanged();
     void onFileCapReached();
     void onPathSelectorChanged(const QString &path);
-    void onScanHereClicked();
-    void updateScanHereButtonState();
+    void onScanRequested(const QString &path);
+    void refreshScanStateIndicators();
     void onSearchModeChanged();
     void onContentTextChanged(const QString &text);
     void onContentRegexToggled(bool on);
@@ -116,7 +117,7 @@ private:
     QLineEdit *m_searchField = nullptr;
     QPushButton *m_excludeButton = nullptr;
     QPushButton *m_showHiddenButton = nullptr;
-    QPushButton *m_scanHereButton = nullptr;
+    ScanStateIndicator *m_searchInIndicator = nullptr;
     QLabel *m_cacheStatusLabel = nullptr;
     bool m_showHidden = false;
 

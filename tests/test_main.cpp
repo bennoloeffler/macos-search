@@ -33,6 +33,7 @@
 #include "FileSearchUiTest.h"
 #include "ContentSearchE2ETest.h"
 #include "SearchResultDelegateTest.h"
+#include "ScanStateIndicatorTest.h"
 
 #define RUN_TEST(TestClass, varName) \
     if (testFilter.isEmpty() || QString(#TestClass) == testFilter) \
@@ -90,6 +91,7 @@ int main(int argc, char *argv[])
     RUN_TEST(FileSearchUiTest, t18);
     RUN_TEST(ContentSearchE2ETest, t19);
     RUN_TEST(SearchResultDelegateTest, t20);
+    RUN_TEST(ScanStateIndicatorTest, t21);
 
     return status;
 }
