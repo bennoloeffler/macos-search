@@ -244,8 +244,7 @@ void FileSearchUiTest::testScanHereButtonLabelDefault()
     FolderBrowserDialog dialog(tdir.path());
     auto *btn = dialog.findChild<QPushButton *>("scanHereButton");
     QVERIFY(btn);
-    QVERIFY(btn->text().contains("Scan"));
-    QVERIFY(btn->text().contains("now"));
+    QCOMPARE(btn->text(), QString("Scan now"));
 }
 
 void FileSearchUiTest::testScanHereButtonDisabledWhenPathDoesNotExist()

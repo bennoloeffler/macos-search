@@ -478,13 +478,26 @@ void FolderBrowserDialog::setupUi()
     m_pathSelector->setPath(QDir::homePath());
     rootLayout->addWidget(m_pathSelector, 1);
 
-    // "+ Scan this folder now" — contextual button that adds the current
-    // Search-in path to the index. Uses expandToUser() so the soft cap auto-
-    // raises (up to the hard ceiling) for this deliberate user action.
-    m_scanHereButton = new QPushButton(tr("+ Scan this folder now"), this);
+    // Contextual button that adds the current Search-in path to the index.
+    // Uses expandToUser() so the soft cap auto-raises (up to the hard
+    // ceiling) for this deliberate user action. Styled to match the
+    // adjacent path-input row height (~30 px) — not the larger primary
+    // action style used at the bottom of the dialog.
+    m_scanHereButton = new QPushButton(tr("Scan now"), this);
     m_scanHereButton->setObjectName("scanHereButton");
     m_scanHereButton->setCursor(Qt::PointingHandCursor);
-    m_scanHereButton->setStyleSheet(SwiftUIStyle::secondaryButtonStyleSheet());
+    m_scanHereButton->setFlat(true);
+    m_scanHereButton->setFixedHeight(28);
+    m_scanHereButton->setStyleSheet(QStringLiteral(
+        "QPushButton { padding: 0 12px; border: 1px solid %1; "
+        "background: %2; color: %3; font-size: 12px; border-radius: 6px; }"
+        "QPushButton:hover:enabled { background: %4; }"
+        "QPushButton:disabled { color: %5; background: %2; }")
+            .arg(SwiftUIStyle::subtleBorder(),
+                 SwiftUIStyle::secondaryBackground(),
+                 SwiftUIStyle::primaryTextColor(),
+                 SwiftUIStyle::chipBackground(),
+                 SwiftUIStyle::secondaryTextColor()));
     rootLayout->addWidget(m_scanHereButton);
     connect(m_scanHereButton, &QPushButton::clicked,
             this, &FolderBrowserDialog::onScanHereClicked);
@@ -1375,20 +1388,18 @@ void FolderBrowserDialog::updateScanHereButtonState()
 
     if (path.isEmpty() || !QDir(path).exists()) {
         m_scanHereButton->setEnabled(false);
-        m_scanHereButton->setText(tr("+ Scan this folder now"));
+        m_scanHereButton->setText(tr("Scan now"));
         m_scanHereButton->setToolTip(tr("Path doesn't exist"));
         return;
     }
 
-    // Already indexed? — true when the path is in the cache and not just
-    // a typed-but-not-yet-scanned string.
     const bool alreadyIndexed = PathCacheManager::instance()
                                     ->cachedPaths()
                                     .contains(path);
 
     if (alreadyIndexed) {
         m_scanHereButton->setEnabled(false);
-        m_scanHereButton->setText(tr("Already indexed"));
+        m_scanHereButton->setText(tr("Indexed"));
         m_scanHereButton->setToolTip(
             tr("This folder is already in the index. Use Preferences → "
                "Rebuild index to refresh."));
@@ -1396,10 +1407,11 @@ void FolderBrowserDialog::updateScanHereButtonState()
     }
 
     m_scanHereButton->setEnabled(true);
-    m_scanHereButton->setText(tr("+ Scan this folder now"));
+    m_scanHereButton->setText(tr("Scan now"));
     if (!FileCacheManager::isUnderHome(path)) {
         m_scanHereButton->setToolTip(
-            tr("Will add folders only — files are indexed in your home folder."));
+            tr("Add this folder to the index — folders only "
+               "(files are indexed in your home folder)."));
     } else {
         m_scanHereButton->setToolTip(
             tr("Add this folder and its contents to the search index."));
