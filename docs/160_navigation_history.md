@@ -96,17 +96,31 @@ navigation toolbar:
   button. Reuse `IconRegistry` SVGs (chevron-left, chevron-right —
   the existing `up-arrow` SVG is a chevron and a left/right pair
   should drop in).
-- Tooltips: `"Back (⌘[)"` / `"Forward (⌘])"`.
+- Tooltips: `"Back (⌘←)"` / `"Forward (⌘→)"`.
 
 ## Keyboard
 
-| chord     | action   | rationale                                    |
-|-----------|----------|----------------------------------------------|
-| `⌘[`      | Back     | Finder, Safari, Chrome, VS Code — universal. |
-| `⌘]`      | Forward  | Same.                                        |
+| chord     | action   | rationale                                           |
+|-----------|----------|-----------------------------------------------------|
+| `⌘←`      | Back     | Same chord everywhere (Safari, Chrome, every chat). |
+| `⌘→`      | Forward  | Same.                                               |
 
-Confirmed no collision against the keymap in `140_keyboard_shortcuts.md`.
-`⌘[` and `⌘]` are currently unbound.
+**Why not `⌘[` / `⌘]`** — those require a dead-key Option on a
+German Mac layout (`[` is typed `⌥5`, `]` is `⌥6`), so the user
+would have to press `⌘⌥5` for Back. Three keys plus the option-as-
+dead-key dance is too heavy. `⌘←` / `⌘→` is one chord on every
+layout (US, German, French, Swiss, …) and matches the universal
+browser/chat convention.
+
+Confirmed no collision against the keymap in `140_keyboard_shortcuts.md`
+— `⌘←` / `⌘→` aren't bound at the dialog level today.
+
+**Trade-off acknowledged**: in a focused `QLineEdit`, Qt's default
+for `⌘←` / `⌘→` is "move cursor to start / end of line". We override
+that at the dialog's `keyPressEvent`. Acceptable because:
+- Our line edits are short; Home / End keys still work for jump-to-end.
+- Every browser and chat app overrides this same chord for back/forward —
+  users already expect that behavior in any single-window app.
 
 Out of scope for v1: trackpad swipe-back gestures (would need
 `QGesture` work).
@@ -229,9 +243,16 @@ In a new `NavigationHistoryTest` class — pure-data, no GUI:
 Plus integration tests in `UsabilityTest` (live dialog):
 
 - `clickFolderPushesHistory` — click a tree row, Back button enables.
-- `cmdLeftBracketGoesBack` — programmatic state change, then
-  `QTest::keyClick(dialog, Qt::Key_BracketLeft, Qt::ControlModifier)`,
+- `cmdLeftGoesBack` — programmatic state change, then
+  `QTest::keyClick(dialog, Qt::Key_Left, Qt::ControlModifier)`
+  (Qt maps `Qt::ControlModifier` to ⌘ on macOS),
   verify state restored.
+- `cmdRightGoesForward` — Back then `Qt::Key_Right` with the same
+  modifier, verify forward state restored.
+- `cmdLeftInSearchFieldGoesBackNotLineStart` — focus the search
+  field, type text, press ⌘←: assert the dialog navigated back,
+  and the line-edit cursor did NOT jump to position 0. (Locks in
+  the override of Qt's default line-edit chord.)
 - `escClearAddsToHistory` (or NOT — depends on Open Question 2).
 - `deletedPathInHistorySkipped` — push state with `/tmp/x`, delete
   the dir, go back, expect the *next* entry to be restored.

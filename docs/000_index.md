@@ -24,7 +24,7 @@ The repo doc set, ordered for a new contributor.
 ## Future features (proposed, not built)
 
 11. [110_features_autostart_and_hotkey.md](110_features_autostart_and_hotkey.md) — autostart for warm cache; global hotkey ⌃⌥⇧S.
-12. [160_navigation_history.md](160_navigation_history.md) — proposed `< >` back/forward through search contexts (root + filters). Four open questions still pending.
+12. [160_navigation_history.md](160_navigation_history.md) — proposed `< >` back/forward through search contexts (root + filters), `⌘←` / `⌘→`. Four open questions still pending.
 
 ## Subsystem deep-dives
 
