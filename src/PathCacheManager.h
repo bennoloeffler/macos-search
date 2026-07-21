@@ -121,8 +121,8 @@ public:
         UserExpand = 1,
     };
 
-    static constexpr int kDefaultSoftCap = 1'000'000;
-    static constexpr int kDefaultHardCeiling = 5'000'000;
+    static constexpr int kDefaultSoftCap = 500'000;
+    static constexpr int kDefaultHardCeiling = 1'000'000;
     static constexpr int kSoftCapIncrement = 150'000;
 
     int softCap() const { return m_softCap.loadAcquire(); }

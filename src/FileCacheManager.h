@@ -23,16 +23,18 @@
 // CAPS
 // ----
 // Two layered limits, matching the design in docs/search_files-too.md:
-//   - softCap   default 5 000 000.   Backstop against background runaway.
+//   - softCap   default 1 000 000.   Backstop against background runaway.
 //                                     Background scans stop adding at the
 //                                     soft cap.  A user-initiated
 //                                     "Scan now" can bump it by +1 M files
 //                                     at a time (capped by hardCeiling).
-//   - hardCeiling default 10 000 000. Absolute ceiling. Nothing exceeds
+//   - hardCeiling default 2 000 000. Absolute ceiling. Nothing exceeds
 //                                     it without a Preferences change.
-//                                     Sized so the worst-case memory
-//                                     footprint stays under ~6 GB combined
-//                                     with PathCacheManager.
+//                                     At today's ~730 B/entry the worst
+//                                     case (2 M files + 1 M folders) is
+//                                     ~2.2 GB; the PathStore redesign
+//                                     (docs/200_pathstore_redesign.md)
+//                                     brings that far down again.
 //
 // Threading: same QReadWriteLock pattern as ExcludeSettings.
 class FileCacheManager : public QObject
@@ -41,8 +43,8 @@ class FileCacheManager : public QObject
 
 public:
     // Default cap values — pinned constants so tests can assert them.
-    static constexpr int kDefaultSoftCap = 5'000'000;
-    static constexpr int kDefaultHardCeiling = 10'000'000;
+    static constexpr int kDefaultSoftCap = 1'000'000;
+    static constexpr int kDefaultHardCeiling = 2'000'000;
     static constexpr int kSoftCapIncrement = 1'000'000;
 
     static FileCacheManager *instance();
