@@ -8,6 +8,7 @@
 #include <QMetaObject>
 #include <QtConcurrent>
 #include <QThreadPool>
+#include <malloc/malloc.h>
 
 PathCacheManager* PathCacheManager::s_instance = nullptr;
 
@@ -362,29 +363,7 @@ void PathCacheManager::restartScanFrom(const QString &rootPath)
             delete worker;
         }
 
-        // Only mark as complete if we weren't stopped
-        bool wasStopped = m_stopRequested.loadAcquire();
-
-        m_scanning.storeRelease(0);
-
-        progressThread->wait();
-        delete progressThread;
-
-        // Only mark root as completed and emit signals if scan finished normally
-        if (!wasStopped) {
-            {
-                QMutexLocker locker(&m_mutex);
-                m_completedRoots.insert(normalizedRoot);
-            }
-
-            int indexed = m_foldersIndexed.loadAcquire();
-            int excluded = m_foldersExcluded.loadAcquire();
-
-            QMetaObject::invokeMethod(this, [this, indexed, excluded]() {
-                emit scanComplete(indexed, excluded);
-                emit cacheUpdated();
-            }, Qt::QueuedConnection);
-        }
+        finishScan(normalizedRoot, progressThread);
     });
     m_scanThread->start();
 }
@@ -502,29 +481,7 @@ void PathCacheManager::expandTo(const QString &rootPath)
             delete worker;
         }
 
-        // Only mark as complete if we weren't stopped
-        bool wasStopped = m_stopRequested.loadAcquire();
-
-        m_scanning.storeRelease(0);
-
-        progressThread->wait();
-        delete progressThread;
-
-        // Only mark root as completed and emit signals if scan finished normally
-        if (!wasStopped) {
-            {
-                QMutexLocker locker(&m_mutex);
-                m_completedRoots.insert(normalizedRoot);
-            }
-
-            int indexed = m_foldersIndexed.loadAcquire();
-            int excluded = m_foldersExcluded.loadAcquire();
-
-            QMetaObject::invokeMethod(this, [this, indexed, excluded]() {
-                emit scanComplete(indexed, excluded);
-                emit cacheUpdated();
-            }, Qt::QueuedConnection);
-        }
+        finishScan(normalizedRoot, progressThread);
     });
     m_scanThread->start();
 }
@@ -1072,29 +1029,38 @@ void PathCacheManager::performScan()
         delete worker;
     }
 
+    finishScan(homeDir, progressThread);
+}
+
+void PathCacheManager::finishScan(const QString &completedRoot, QThread *progressThread)
+{
     // Only mark as complete if we weren't stopped
-    bool wasStopped = m_stopRequested.loadAcquire();
+    const bool wasStopped = m_stopRequested.loadAcquire() != 0;
 
     m_scanning.storeRelease(0);
 
-    // Stop progress thread
     progressThread->wait();
     delete progressThread;
 
     // Only mark root as completed and emit signals if scan finished normally
-    if (!wasStopped) {
-        {
-            QMutexLocker locker(&m_mutex);
-            m_completedRoots.insert(homeDir);
-        }
+    if (wasStopped) return;
 
-        int indexed = m_foldersIndexed.loadAcquire();
-        int excluded = m_foldersExcluded.loadAcquire();
-
-        // Emit completion on main thread
-        QMetaObject::invokeMethod(this, [this, indexed, excluded]() {
-            emit scanComplete(indexed, excluded);
-            emit cacheUpdated();
-        }, Qt::QueuedConnection);
+    {
+        QMutexLocker locker(&m_mutex);
+        m_completedRoots.insert(completedRoot);
     }
+
+    // The BFS churns through millions of transient allocations (entryList
+    // QStrings, queue nodes). Ask malloc to hand freed pages back to the OS
+    // so RSS drops to the live cache size after the scan.
+    malloc_zone_pressure_relief(nullptr, 0);
+
+    const int indexed = m_foldersIndexed.loadAcquire();
+    const int excluded = m_foldersExcluded.loadAcquire();
+
+    // Emit completion on main thread
+    QMetaObject::invokeMethod(this, [this, indexed, excluded]() {
+        emit scanComplete(indexed, excluded);
+        emit cacheUpdated();
+    }, Qt::QueuedConnection);
 }

@@ -84,6 +84,12 @@ private:
     void performScan();
     void scanWorker(); // Parallel worker thread
 
+    // Shared completion tail for all three scan entry points. Runs on the
+    // scan thread: stops the progress thread and — unless the scan was
+    // stopped — records the completed root, returns freed heap pages to the
+    // OS, and emits scanComplete/cacheUpdated on the main thread.
+    void finishScan(const QString &completedRoot, QThread *progressThread);
+
     // Add a path to cache and watcher
     void addPathToCache(const QString &path);
     void removePathFromCache(const QString &path);
