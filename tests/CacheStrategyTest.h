@@ -44,7 +44,8 @@ private slots:
     // linked trees twice (~/Dropbox → ~/VundS Dropbox) and loops forever
     // on ancestor links. Symlinked dirs are cached as leaves, never
     // descended.
-    void symlinkedDirIsCachedButNotDescended();
+    void symlinkedDirIsSkippedNotFollowed();
+    void symlinkToOutsideTargetNotIndexed();
     void symlinkCycleTerminatesQuickly();
 
     // Folder cap (2026-05-19)

@@ -551,8 +551,12 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
 
     // Standalone-app drift: always include hidden — eye-toggle is
     // presentational only. See docs/todos.md TODO 4.
+    // NoSymLinks is CRITICAL: without it QDir::Dirs stat()s each entry
+    // (following symlinks) to classify it, and following the cloud-storage
+    // symlinks in ~ (~/iCloud, ~/OneDrive-*) triggers a macOS File Provider /
+    // privacy prompt and blocks the scan. lstat-based NoSymLinks skips them.
     QDir::Filters scanFilters = QDir::Dirs | QDir::NoDotAndDotDot
-                                | QDir::Readable | QDir::Hidden;
+                                | QDir::Readable | QDir::Hidden | QDir::NoSymLinks;
     QStringList currentEntries = dir.entryList(scanFilters);
 
     // Snapshot cached children (folders and files) of this directory —
@@ -822,8 +826,13 @@ void PathCacheManager::scanWorker()
         // Standalone-app drift: always include hidden in the cache.
         // Eye-toggle is now purely presentational — filtered out by the
         // search worker / tree view. See docs/todos.md TODO 4.
+        // NoSymLinks: never follow symlinks. Following the cloud-storage
+        // symlinks in ~ (→ ~/Library/CloudStorage/OneDrive-*, iCloud) makes
+        // macOS prompt for File Provider / privacy access and stalls the scan.
+        // Real target dirs (~/VundS Dropbox, ~/Dropbox (Personal)) are local
+        // and scanned directly, so nothing searchable is lost.
         QDir::Filters folderFilters = QDir::Dirs | QDir::NoDotAndDotDot
-                                      | QDir::Readable | QDir::Hidden;
+                                      | QDir::Readable | QDir::Hidden | QDir::NoSymLinks;
         const QFileInfoList folderEntries = dir.entryInfoList(folderFilters);
         const QSet<QString> pathExcluded = pathLevelExcludedChildren(currentPath);
 
@@ -1059,7 +1068,8 @@ void PathCacheManager::indexNewSubtree(const QString &dirPath)
 
     QStringList toRecurse;
     const QFileInfoList subs = dir.entryInfoList(
-        QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable | QDir::Hidden);
+        QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable | QDir::Hidden
+        | QDir::NoSymLinks);
     for (const QFileInfo &info : subs) {
         const QString name = info.fileName();
         if (m_excludeSettings && m_excludeSettings->shouldExclude(name)) continue;

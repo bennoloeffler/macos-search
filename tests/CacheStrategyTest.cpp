@@ -247,7 +247,7 @@ void CacheStrategyTest::homeLibraryIsNotInCacheAfterScan()
              qPrintable(lib + " leaked into the cache"));
 }
 
-void CacheStrategyTest::symlinkedDirIsCachedButNotDescended()
+void CacheStrategyTest::symlinkedDirIsSkippedNotFollowed()
 {
     QTemporaryDir tmp;
     QVERIFY(tmp.isValid());
@@ -262,10 +262,40 @@ void CacheStrategyTest::symlinkedDirIsCachedButNotDescended()
     const QStringList all = cache->cachedPaths();
     // The real tree is fully indexed…
     QVERIFY(all.contains(root + "/real/inner"));
-    // …the symlink may appear as a selectable leaf, but nothing below it.
+    // …the symlink is skipped ENTIRELY — not cached and not followed. This is
+    // what NoSymLinks buys us: the scan never stat()s the symlink target, so a
+    // symlink into a cloud-storage / File-Provider location (~/iCloud,
+    // ~/OneDrive-*) can't trigger a macOS privacy prompt or stall the scan.
+    QVERIFY2(!all.contains(root + "/link"), "symlink itself was cached");
     QVERIFY2(!anyPathStartsWith(all, root + "/link/"),
              "scan descended into a symlinked directory");
     QVERIFY(!all.contains(root + "/link/inner"));
+}
+
+void CacheStrategyTest::symlinkToOutsideTargetNotIndexed()
+{
+    // Mirrors the real bug: a symlink in the scanned dir points at a tree
+    // OUTSIDE the scan root (like ~/iCloud → ~/Library/…). NoSymLinks must
+    // ensure the outside target is never walked or indexed.
+    QTemporaryDir tmp, outside;
+    QVERIFY(tmp.isValid() && outside.isValid());
+    QVERIFY(QDir().mkpath(outside.path() + "/secret/deep"));
+    QVERIFY(QFile::link(outside.path(), tmp.path() + "/cloud"));
+
+    auto *cache = PathCacheManager::instance();
+    // stopScan first: otherwise expandTo() enqueues tmp's ANCESTORS into the
+    // in-flight $HOME scan (init's rescan), and the shared /var/folders parent
+    // would enumerate the sibling `outside` dir directly — unrelated to the
+    // symlink. With no scan running, expandTo does a clean tmp-only walk.
+    cache->stopScan();
+    QTest::qWait(30);
+    cache->expandTo(tmp.path());
+    waitForScanComplete(cache);
+
+    const QStringList all = cache->cachedPaths();
+    QVERIFY2(!anyPathStartsWith(all, outside.path()),
+             "scan followed a symlink to an outside tree");
+    QVERIFY2(!all.contains(tmp.path() + "/cloud"), "outside symlink was cached");
 }
 
 void CacheStrategyTest::symlinkCycleTerminatesQuickly()
