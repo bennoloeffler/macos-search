@@ -21,20 +21,6 @@ inline bool isAscii(QByteArrayView bytes)
     return true;
 }
 
-// Naive substring search on short buffers (names are ≤ 255 bytes).
-inline bool containsBytes(const char *hay, int hayLen, const QByteArray &needle)
-{
-    const int n = int(needle.size());
-    if (n == 0 || n > hayLen) return false;
-    const char *nd = needle.constData();
-    for (int i = 0; i + n <= hayLen; ++i) {
-        if (hay[i] == nd[0] && std::memcmp(hay + i, nd, size_t(n)) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 }  // anonymous
 
 PathStore::PathStore()
@@ -388,54 +374,102 @@ QStringList PathStore::search(const QString &query, Kind kind,
         if (rootNode < 0) return {};
     }
 
-    // Pass A: per-node name → bitmask of terms contained in that segment.
+    // Two passes, chunked so the search can stop early once maxResults hit.
+    // The arena is gapless (append-only, names concatenated in node order),
+    // so each ~2 MB chunk covers a contiguous node range [i, j):
+    //
+    //   Pass A (per chunk): lowercase the chunk once, then one memchr/memcmp
+    //   walk per ASCII term (NEON-fast), merging hit offsets back to nodes
+    //   with a forward cursor; hits spanning a name boundary are rejected.
+    //   Non-ASCII terms fold only the nodes flagged NonAscii — a pure-ASCII
+    //   name can never contain such a term.
+    //
+    //   Pass B (same chunk): forward propagation — parent < child, and
+    //   parents live in earlier (or this) chunk, so a node inherits every
+    //   term its ancestors matched; the same trick scopes to the root.
     std::vector<quint8> mask(size_t(n), 0);
-    char lowered[256];
-    for (qint32 i = 0; i < n; ++i) {
-        const Node &nd = m_nodes[size_t(i)];
-        if (nd.nameLen == 0) continue;
-        const char *nm = m_names.constData() + nd.nameOff;
-        quint8 m = 0;
-        if (!(nd.flags & kNonAscii)) {
-            // ASCII fast path (~95 % of names): bytewise tolower once,
-            // then plain substring scans.
-            for (int b = 0; b < nd.nameLen; ++b) lowered[b] = asciiLower(nm[b]);
-            for (int t = 0; t < ts.size(); ++t) {
-                if (!ts[t].ascii.isEmpty()
-                    && containsBytes(lowered, nd.nameLen, ts[t].ascii)) {
-                    m |= quint8(1u << t);
-                }
-            }
-        } else {
-            // Unicode-correct fallback — umlauts matter.
-            const QString ls = QString::fromUtf8(nm, nd.nameLen).toLower();
-            for (int t = 0; t < ts.size(); ++t) {
-                if (ls.contains(ts[t].str)) m |= quint8(1u << t);
-            }
-        }
-        mask[size_t(i)] = m;
-    }
-
-    // Pass B: forward propagation (parent < child) — a node inherits every
-    // term its ancestors matched; same trick scopes to the root.
     std::vector<quint8> under;
     if (rootNode > 0) {
         under.assign(size_t(n), 0);
         under[size_t(rootNode)] = 1;
     }
+    bool anyAsciiTerm = false, anyUnicodeTerm = false;
+    for (const Term &t : ts) (t.ascii.isEmpty() ? anyUnicodeTerm : anyAsciiTerm) = true;
+
+    const auto nameEnd = [this](qint32 i) {
+        return size_t(m_nodes[size_t(i)].nameOff) + m_nodes[size_t(i)].nameLen;
+    };
     const quint8 wantKind = (kind == File ? kKindFile : 0);
+    constexpr size_t kChunk = size_t(2) << 20;
+    std::vector<char> buf;
     QStringList out;
-    for (qint32 i = 0; i < n; ++i) {
-        const Node &nd = m_nodes[size_t(i)];
-        if (nd.parent >= 0) {
-            mask[size_t(i)] |= mask[size_t(nd.parent)];
-            if (rootNode > 0 && under[size_t(nd.parent)]) under[size_t(i)] = 1;
+
+    qint32 i = 0;
+    while (i < n) {
+        const size_t chunkStart = m_nodes[size_t(i)].nameOff;
+        qint32 j = i + 1;
+        while (j < n && nameEnd(j) - chunkStart <= kChunk) ++j;
+        const size_t chunkEnd = (j < n) ? m_nodes[size_t(j)].nameOff
+                                        : size_t(m_names.size());
+        const size_t len = chunkEnd - chunkStart;
+
+        if (anyAsciiTerm && len > 0) {
+            buf.resize(len);
+            const char *src = m_names.constData() + chunkStart;
+            for (size_t b = 0; b < len; ++b) buf[b] = asciiLower(src[b]);
+
+            for (int t = 0; t < ts.size(); ++t) {
+                if (ts[t].ascii.isEmpty()) continue;
+                const char *needle = ts[t].ascii.constData();
+                const size_t nlen = size_t(ts[t].ascii.size());
+                if (nlen > len) continue;
+                qint32 node = i;
+                size_t pos = 0;
+                while (pos + nlen <= len) {
+                    const char *hit = static_cast<const char *>(
+                        memchr(buf.data() + pos, needle[0], len - nlen - pos + 1));
+                    if (!hit) break;
+                    if (nlen > 1 && std::memcmp(hit + 1, needle + 1, nlen - 1) != 0) {
+                        pos = size_t(hit - buf.data()) + 1;
+                        continue;
+                    }
+                    const size_t off = chunkStart + size_t(hit - buf.data());
+                    while (node < j && nameEnd(node) <= off) ++node;
+                    if (off + nlen <= nameEnd(node)) {
+                        mask[size_t(node)] |= quint8(1u << t);
+                        pos = nameEnd(node) - chunkStart;   // done with this name
+                    } else {
+                        pos = (off - chunkStart) + 1;       // spans a boundary
+                    }
+                }
+            }
         }
-        if (mask[size_t(i)] != all) continue;
-        if (rootNode > 0 && !under[size_t(i)]) continue;
-        if (!(nd.flags & kEntry) || (nd.flags & kKindFile) != wantKind) continue;
-        out.append(pathOfLocked(i));
-        if (out.size() >= maxResults) break;
+        if (anyUnicodeTerm) {
+            for (qint32 idx = i; idx < j; ++idx) {
+                const Node &nd = m_nodes[size_t(idx)];
+                if (!(nd.flags & kNonAscii)) continue;
+                const QString ls = QString::fromUtf8(
+                    m_names.constData() + nd.nameOff, nd.nameLen).toLower();
+                for (int t = 0; t < ts.size(); ++t) {
+                    if (!ts[t].ascii.isEmpty()) continue;
+                    if (ls.contains(ts[t].str)) mask[size_t(idx)] |= quint8(1u << t);
+                }
+            }
+        }
+
+        for (qint32 idx = i; idx < j; ++idx) {
+            const Node &nd = m_nodes[size_t(idx)];
+            if (nd.parent >= 0) {
+                mask[size_t(idx)] |= mask[size_t(nd.parent)];
+                if (rootNode > 0 && under[size_t(nd.parent)]) under[size_t(idx)] = 1;
+            }
+            if (mask[size_t(idx)] != all) continue;
+            if (rootNode > 0 && !under[size_t(idx)]) continue;
+            if (!(nd.flags & kEntry) || (nd.flags & kKindFile) != wantKind) continue;
+            out.append(pathOfLocked(idx));
+            if (out.size() >= maxResults) return out;
+        }
+        i = j;
     }
     return out;
 }
