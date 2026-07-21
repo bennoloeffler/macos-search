@@ -292,9 +292,9 @@ void FileCacheManagerTest::testDefaultCapsMatchConstants()
     QCOMPARE(c->hardCeiling(), FileCacheManager::kDefaultHardCeiling);
     // Lowered 2026-07-21 (Block 2): at ~730 B/entry the old caps allowed
     // multi-GB caches. See docs/200_pathstore_redesign.md.
-    QCOMPARE(FileCacheManager::kDefaultSoftCap, 1'000'000);
-    QCOMPARE(FileCacheManager::kDefaultHardCeiling, 2'000'000);
+    QCOMPARE(FileCacheManager::kDefaultSoftCap, 5'000'000);
+    QCOMPARE(FileCacheManager::kDefaultHardCeiling, 10'000'000);
     QCOMPARE(FileCacheManager::kSoftCapIncrement, 1'000'000);
-    QCOMPARE(PathCacheManager::kDefaultSoftCap, 500'000);
-    QCOMPARE(PathCacheManager::kDefaultHardCeiling, 1'000'000);
+    QCOMPARE(PathCacheManager::kDefaultSoftCap, 1'000'000);
+    QCOMPARE(PathCacheManager::kDefaultHardCeiling, 5'000'000);
 }
