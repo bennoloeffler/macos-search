@@ -26,7 +26,7 @@ if(EXISTS "/usr/local/opt/qt")
     list(APPEND CMAKE_PREFIX_PATH "/usr/local/opt/qt")
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg Test)
 
 enable_testing()
 
@@ -123,6 +123,7 @@ target_link_libraries(macos-search PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Concurrent
+    Qt6::Svg
     "-framework Carbon"
     "-framework CoreServices"
 )
@@ -227,6 +228,7 @@ target_link_libraries(macos-search_tests PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Concurrent
+    Qt6::Svg
     Qt6::Test
     "-framework Carbon"
     "-framework CoreServices"

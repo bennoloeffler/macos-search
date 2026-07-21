@@ -37,10 +37,41 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QAbstractFileIconProvider>
+#include <QStyle>
 #include <QToolTip>
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <algorithm>
+
+namespace {
+// Zero-cost icon provider for the browse tree — see setIconProvider() below.
+class FastFileIconProvider : public QAbstractFileIconProvider
+{
+public:
+    QIcon icon(IconType type) const override
+    {
+        return type == Folder ? folderIcon() : fileIcon();
+    }
+    QIcon icon(const QFileInfo &info) const override
+    {
+        return info.isDir() ? folderIcon() : fileIcon();
+    }
+private:
+    static QIcon folderIcon()
+    {
+        static const QIcon i =
+            QApplication::style()->standardIcon(QStyle::SP_DirIcon);
+        return i;
+    }
+    static QIcon fileIcon()
+    {
+        static const QIcon i =
+            QApplication::style()->standardIcon(QStyle::SP_FileIcon);
+        return i;
+    }
+};
+}  // namespace
 
 FolderBrowserDialog::FolderBrowserDialog(const QString &initialDir, QWidget *parent)
     : QDialog(parent)
@@ -360,7 +391,9 @@ void FolderBrowserDialog::setupUi()
     m_showHiddenButton->setObjectName("showHiddenButton");
     m_showHiddenButton->setFlat(true);
     m_showHiddenButton->setCheckable(true);
-    m_showHiddenButton->setToolTip(tr("Show hidden folders"));
+    m_showHiddenButton->setToolTip(
+        tr("Show hidden files and folders (names starting with a dot, "
+           "e.g. .git, .config). Off by default."));
     m_showHiddenButton->setFixedSize(28, 28);
     m_showHiddenButton->setCursor(Qt::PointingHandCursor);
     m_showHiddenButton->setIcon(IconRegistry::coloredIcon("eye", SwiftUIStyle::primaryTextQColor()));
@@ -636,6 +669,12 @@ void FolderBrowserDialog::setupUi()
 
     // File system model (directories only)
     m_fileSystemModel = new QFileSystemModel(this);
+    // Fast icon provider: the default QFileSystemModel provider fetches a
+    // per-file SYSTEM icon (stat + icon lookup) for every entry; browsing a
+    // directory with tens of thousands of files floods the model with updates
+    // and stalls the UI. Two cached style icons (folder / file) cost nothing
+    // per entry and keep scrolling smooth in huge directories.
+    m_fileSystemModel->setIconProvider(new FastFileIconProvider());
     // Initial filter is computed once during construction; subsequent
     // changes go through applyTreeViewFilter() so Mode + eye toggle both
     // contribute to the final QDir::Filters bitmask consistently.
@@ -647,7 +686,9 @@ void FolderBrowserDialog::setupUi()
     m_folderTreeView->setObjectName("folderTreeView");
     m_folderTreeView->setModel(m_fileSystemModel);
     m_folderTreeView->setHeaderHidden(true);
-    m_folderTreeView->setAnimated(true);
+    // Animation stutters when expanding a node with thousands of children.
+    m_folderTreeView->setAnimated(false);
+    m_folderTreeView->setUniformRowHeights(true);  // skips per-row height calc
     m_folderTreeView->setIndentation(20);
     m_folderTreeView->setSortingEnabled(true);
     m_folderTreeView->sortByColumn(0, Qt::AscendingOrder);
