@@ -31,6 +31,7 @@ private slots:
     void testInlineIndicatorLivesInsidePathField();
     void testNoStandaloneScanHereButtonAnymore();
     void testFavoriteRowsHaveIndicator();
+    void testCacheStatusLabelShowsFolderAndFileCounts();
 };
 
 #endif // FILESEARCHUITEST_H

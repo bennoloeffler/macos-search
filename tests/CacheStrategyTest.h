@@ -36,6 +36,10 @@ private slots:
 
     // Folder cap (2026-05-19)
     void folderHardCeilingBlocksAdditions();
+    // Cap-aware descent (2026-07-21, Block 2): when folder AND file caps
+    // are both reached, the BFS stops enqueueing subdirectories instead of
+    // walking the rest of the disk for nothing.
+    void cappedScanStopsDescendingAndCompletes();
     void folderSoftCapEmitsSignalOnce();
     void expandToUserBumpsFolderSoftCap();
     void expandToUserBumpsFileSoftCap();

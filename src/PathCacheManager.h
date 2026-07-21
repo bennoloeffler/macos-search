@@ -84,6 +84,12 @@ private:
     void performScan();
     void scanWorker(); // Parallel worker thread
 
+    // Shared completion tail for all three scan entry points. Runs on the
+    // scan thread: stops the progress thread and — unless the scan was
+    // stopped — records the completed root, returns freed heap pages to the
+    // OS, and emits scanComplete/cacheUpdated on the main thread.
+    void finishScan(const QString &completedRoot, QThread *progressThread);
+
     // Add a path to cache and watcher
     void addPathToCache(const QString &path);
     void removePathFromCache(const QString &path);
@@ -121,8 +127,8 @@ public:
         UserExpand = 1,
     };
 
-    static constexpr int kDefaultSoftCap = 1'000'000;
-    static constexpr int kDefaultHardCeiling = 5'000'000;
+    static constexpr int kDefaultSoftCap = 500'000;
+    static constexpr int kDefaultHardCeiling = 1'000'000;
     static constexpr int kSoftCapIncrement = 150'000;
 
     int softCap() const { return m_softCap.loadAcquire(); }
