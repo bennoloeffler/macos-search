@@ -1,5 +1,15 @@
 # 210 — Persistent index: warm start + reconciliation
 
+**Status: IMPLEMENTED** (2026-07). Snapshot save/load + generation
+mark-and-sweep live in `PathStore`; wiring in `PathCacheManager`
+(`indexFingerprint`, `saveSnapshot`, `tryLoadSnapshot`, `finishScan`) and
+`main.cpp`. Snapshot at `~/.macos-search/index-v1.bin` (MSIX raw blob,
+live nodes only, `QSaveFile`). Measured: 100k entries save ~11 ms / load
+~1 ms / ~2.5 MB. Deletions reconcile via the parent-was-listed sweep;
+the skipped-subtree hazard is covered end-to-end in `CacheStrategyTest`
+and unit-tested in `PathStoreTest`. Deliberately-out items below (mtime
+refresh, double-buffering, journal) remain unbuilt.
+
 **Goal:** app start → searchable from the last known index in ~0.2 s;
 a background rescan brings the index back in sync with reality; no new
 memory cost; as little code as possible.
