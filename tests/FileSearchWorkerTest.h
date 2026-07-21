@@ -18,6 +18,7 @@ private slots:
     void testRootPathScopesResults();
     void testResultsSortedByScore();
     void testCancelStopsPendingSearch();
+    void testRapidSupersedeEmitsOnlyLast();
     void testFuzzyScoreReturnsPositiveForBasename();
 };
 

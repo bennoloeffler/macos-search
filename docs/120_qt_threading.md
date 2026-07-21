@@ -132,6 +132,44 @@ void ExcludeSettings::addPattern(const QString &p) {
 
 ---
 
+## Search runs off the GUI thread (2026-07-21)
+
+**Symptom.** Typing beach-balled the UI. `FolderSearchWorker` /
+`FileSearchWorker` debounced with a `QTimer`, but the timeout slot called
+`PathCacheManager::search()` / `FileCacheManager::search()` **synchronously on
+the main thread**. Those do an O(n) two-pass scan over the arena (~2M folders,
+up to ~5M files), blocking the GUI thread for tens of ms per keystroke.
+
+**Fix.** The debounce and the `resultsReady` / `searchFinished` signals stay on
+the main thread; only the `search()` call moves to a background thread:
+
+- `performSearch()` (main thread) snapshots the query, root path and
+  `includeHidden` into locals, bumps a `m_generation` counter, then dispatches
+  the scan via `QtConcurrent::run`. The lambda calls the static
+  `computeResults(query, rootPath, includeHidden)` — which reads **no** member
+  state, so nothing the GUI thread mutates is touched off-thread. The caches'
+  `search()` is already thread-safe (internal `QReadWriteLock`).
+- The background lambda marshals its result list back with
+  `QMetaObject::invokeMethod(this, …, Qt::QueuedConnection)`. That delivery
+  lambda runs on the main thread, so `m_generation` is only ever read/written
+  there — no lock needed.
+
+**Superseding stale results.** Each `performSearch()`/`cancel()` increments
+`m_generation` (GUI thread only). When a background search finishes, the
+delivery lambda compares its captured generation to the current one; if the
+user has typed again (`gen != m_generation`) the results are dropped, so an
+older, slower search can never overwrite a newer one on screen. `cancel()` also
+bumps the counter, so a superseded in-flight search is silently discarded.
+
+**Destruction safety.** The background lambda captures `this`. Workers normally
+outlive the app, but stack-allocated workers in tests can be destroyed with a
+task in flight, so the destructor waits on the stored `QFuture` before
+returning. `waitForFinished()` doesn't block on the GUI event loop (the lambda
+only *posts* a queued event and returns), so there's no deadlock; Qt drops the
+still-queued delivery event when `~QObject` runs.
+
+---
+
 ## QFileSystemModel + background thread
 
 `QFileSystemModel` ships with its own internal `QFileInfoGatherer` thread

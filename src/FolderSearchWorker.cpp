@@ -1,5 +1,6 @@
 #include "FolderSearchWorker.h"
 #include "PathCacheManager.h"
+#include <QtConcurrent>
 #include <QTimer>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -17,6 +18,10 @@ FolderSearchWorker::FolderSearchWorker(QObject *parent)
 FolderSearchWorker::~FolderSearchWorker()
 {
     cancel();
+    // Wait for any in-flight background search to finish before we're
+    // destroyed — its lambda captures `this`. Rare (workers usually outlive
+    // the app); matters for stack-allocated workers in tests.
+    if (m_future.isRunning()) m_future.waitForFinished();
 }
 
 void FolderSearchWorker::search(const QString &query, const QString &rootPath)
@@ -29,6 +34,7 @@ void FolderSearchWorker::search(const QString &query, const QString &rootPath)
 void FolderSearchWorker::cancel()
 {
     m_debounceTimer->stop();
+    ++m_generation;  // drop any in-flight background search's results
     m_searching = false;
 }
 
@@ -39,6 +45,8 @@ bool FolderSearchWorker::isSearching() const
 
 void FolderSearchWorker::performSearch()
 {
+    const quint64 gen = ++m_generation;
+
     if (m_pendingQuery.isEmpty()) {
         emit resultsReady({});
         emit searchFinished(0);
@@ -48,26 +56,47 @@ void FolderSearchWorker::performSearch()
     emit searchStarted();
     m_searching = true;
 
-    // Search the in-memory cache (instant!)
+    // Run the O(n) cache scan off the GUI thread so typing never blocks.
+    // Inputs are copied; results are marshalled back to this thread, where a
+    // generation check drops anything the user has already typed past.
+    const QString query = m_pendingQuery;
+    const QString rootPath = m_pendingRootPath;
+    const bool includeHidden = m_includeHidden;
+    m_future = QtConcurrent::run([this, gen, query, rootPath, includeHidden]() {
+        QList<SearchResult> results = computeResults(query, rootPath, includeHidden);
+        QMetaObject::invokeMethod(this, [this, gen, results]() {
+            if (gen != m_generation) return;  // superseded — a newer search won
+            m_searching = false;
+            emit resultsReady(results);
+            emit searchFinished(static_cast<int>(results.size()));
+        }, Qt::QueuedConnection);
+    });
+}
+
+QList<SearchResult> FolderSearchWorker::computeResults(const QString &query,
+                                                       const QString &rootPath,
+                                                       bool includeHidden)
+{
+    // Search the in-memory cache (thread-safe: internal QReadWriteLock).
     PathCacheManager *cache = PathCacheManager::instance();
     // Ask the cache for a generous slice so the post-filter still has
     // 100 visible results after hidden paths are dropped. 600 is
     // empirically enough for ~600 hidden:1 visible ratios.
-    const int upstreamCap = m_includeHidden ? 100 : 600;
-    QStringList paths = cache->search(m_pendingQuery, m_pendingRootPath, upstreamCap);
+    const int upstreamCap = includeHidden ? 100 : 600;
+    QStringList paths = cache->search(query, rootPath, upstreamCap);
 
     // Convert to SearchResult with scores. Filter out hidden paths
     // unless includeHidden is enabled (the cache always contains them
     // — eye toggle is presentational, see docs/todos.md TODO 4).
     QList<SearchResult> results;
     for (const QString &path : paths) {
-        if (!m_includeHidden && pathIsHidden(path)) {
+        if (!includeHidden && pathIsHidden(path)) {
             continue;
         }
         SearchResult result;
         result.path = path;
         result.displayName = QFileInfo(path).fileName();
-        result.score = fuzzyScore(path, m_pendingQuery, m_pendingRootPath);
+        result.score = fuzzyScore(path, query, rootPath);
         results.append(result);
         if (results.size() >= 100) break;
     }
@@ -80,9 +109,7 @@ void FolderSearchWorker::performSearch()
         return a.path.length() < b.path.length();
     });
 
-    m_searching = false;
-    emit resultsReady(results);
-    emit searchFinished(static_cast<int>(results.size()));
+    return results;
 }
 
 bool FolderSearchWorker::folderMatchesQuery(const QString &folderName, const QString &query)
