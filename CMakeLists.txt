@@ -57,6 +57,7 @@ set(MACOS_SEARCH_LIB_SOURCES
     src/EditorLauncher.cpp
     src/EditorLauncher.h
     src/Bench.cpp
+src/ScanQueue.h
     src/Bench.h
     src/SearchResultDelegate.cpp
     src/SearchResultDelegate.h
@@ -164,6 +165,8 @@ set(MACOS_SEARCH_TEST_SOURCES
     tests/test_main.cpp
     tests/PathStoreTest.cpp
     tests/PathStoreTest.h
+    tests/ScanQueueTest.cpp
+    tests/ScanQueueTest.h
     tests/PathCacheManagerTest.cpp
     tests/PathCacheManagerTest.h
     tests/SearchFieldTest.cpp

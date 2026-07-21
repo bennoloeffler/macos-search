@@ -5,6 +5,7 @@
 #include "FolderBrowserDialog.h"
 #include "GlobalHotkey.h"
 #include "PathCacheManager.h"
+#include "ScanQueue.h"
 #include "ThemeManager.h"
 
 #include <QApplication>
@@ -18,30 +19,40 @@
 
 namespace {
 
-/// Resolve the priority-ordered list of paths to pre-scan at startup.
-///
-///   1. The default favorite (or $HOME if no default is set).
-///   2. Each remaining favorite, in sidebar order.
+/// Resolve the priority-ordered list of paths to pre-scan at startup —
+/// most-probable search targets first (see ScanQueue::build): the default
+/// favorite, Desktop, Downloads, Documents, any real top-level Dropbox
+/// folder, then the rest of home, then the remaining favorites.
 ///
 /// Non-existent paths are dropped, duplicates collapsed. `/` is fine —
 /// the cache's path-level excludes already skip `/System`, `/private`, etc.
 QStringList resolveScanQueue()
 {
     QSettings settings("Maude", "FolderBrowser");
-    const QString defaultFav = FolderBrowserDialog::resolveDefaultStartPath();
-    QStringList favorites = settings.value("favorites").toStringList();
+    const QString home = QDir::homePath();
+
+    // Real (non-symlink) top-level Dropbox dirs. Symlinked aliases like
+    // ~/Dropbox → ~/VundS Dropbox are skipped — the scan never descends
+    // into symlinks anyway.
+    QStringList dropboxDirs;
+    const QFileInfoList topLevel = QDir(home).entryInfoList(
+        QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
+    for (const QFileInfo &info : topLevel) {
+        if (info.fileName().contains(QStringLiteral("dropbox"),
+                                     Qt::CaseInsensitive)) {
+            dropboxDirs.append(info.absoluteFilePath());
+        }
+    }
+
+    const QStringList candidates = ScanQueue::build(
+        home,
+        FolderBrowserDialog::resolveDefaultStartPath(),
+        settings.value("favorites").toStringList(),
+        dropboxDirs);
 
     QStringList ordered;
-    auto pushIfExists = [&ordered](const QString &raw) {
-        const QString cleaned = QDir::cleanPath(raw);
-        if (cleaned.isEmpty() || !QDir(cleaned).exists()) return;
-        if (ordered.contains(cleaned)) return;
-        ordered.append(cleaned);
-    };
-    pushIfExists(defaultFav);
-    pushIfExists(QDir::homePath());
-    for (const QString &p : favorites) {
-        pushIfExists(p);
+    for (const QString &c : candidates) {
+        if (QDir(c).exists() && !ordered.contains(c)) ordered.append(c);
     }
     return ordered;
 }
@@ -166,6 +177,11 @@ int main(int argc, char *argv[])
     // dev binary as the user's at-login app. See src/Autostart.cpp and
     // docs/todos.md TODO 5.
     if (Autostart::firstRunNeedsPrompt()) {
+        // Mark BEFORE exec: "ask once" must hold even if the app is quit
+        // while the prompt is open (exec never returns then, and the
+        // prompt used to reappear on every launch). Autostart itself
+        // remains changeable in Preferences.
+        Autostart::markFirstRunCompleted();
         FirstRunDialog firstRun(&dialog);
         firstRun.exec();
         Autostart::applyFirstRunChoice(firstRun.result() == QDialog::Accepted);
