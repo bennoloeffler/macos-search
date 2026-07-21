@@ -41,6 +41,14 @@ private slots:
 
     void clearResetsStore();
 
+    // Snapshot save/load (docs/210_persistent_index.md)
+    void saveLoadRoundtripPreservesStore();
+    void saveDropsTombstonedNodes();
+    void loadRefusesWrongFingerprint();
+    void loadRefusesTruncatedFile();
+    void loadRefusesGarbage();
+    void snapshotTiming100k();
+
     // G1 gate (hard-fail): ≤ 36 bytes per entry on 100k realistic names.
     void memoryGateG1();
 };

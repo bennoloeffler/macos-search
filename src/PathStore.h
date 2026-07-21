@@ -81,6 +81,15 @@ public:
     qint64 bytesUsed() const;                     // exact accounting (G1 gate)
     QStringList entries(Kind k) const;            // live paths, insertion order
 
+    // Snapshot persistence (docs/210_persistent_index.md). Raw-blob format:
+    // MSIX magic, version, fingerprint, counts, node array + name arena as
+    // one write each. saveTo() writes live nodes only (tombstones dropped,
+    // parent indexes remapped) via QSaveFile — a crash never corrupts an
+    // existing snapshot. loadFrom() refuses on any mismatch or corruption
+    // and leaves the store unchanged; the snapshot is a pure accelerator.
+    bool saveTo(const QString &filePath, const QByteArray &fingerprint) const;
+    bool loadFrom(const QString &filePath, const QByteArray &expectedFingerprint);
+
     // Search: every term must appear case-insensitively in SOME segment of
     // the path (ancestor names count). Whitespace and '/' both split terms.
     QStringList search(const QString &query, Kind kind,

@@ -336,6 +336,178 @@ void PathStoreTest::clearResetsStore()
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot save/load (docs/210_persistent_index.md)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const QByteArray kTestFingerprint = QByteArrayLiteral("test-fingerprint-v1");
+
+// Realistic-ish fixture: folders, files, non-ASCII names, a scaffold chain.
+void seedStore(PathStore &s)
+{
+    s.findOrCreatePath("/home/projects", PathStore::Folder);
+    s.findOrCreatePath("/home/projects/app", PathStore::Folder);
+    s.findOrCreatePath("/home/projects/app/README.md", PathStore::File);
+    s.findOrCreatePath("/home/projects/app/main.cpp", PathStore::File);
+    s.findOrCreatePath(QString::fromUtf8("/home/Büro/Café-Liste.pdf"),
+                       PathStore::File);
+    s.findOrCreatePath("/home/notes.txt", PathStore::File);
+}
+
+}  // anonymous
+
+void PathStoreTest::saveLoadRoundtripPreservesStore()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+
+    QCOMPARE(t.count(PathStore::Folder), s.count(PathStore::Folder));
+    QCOMPARE(t.count(PathStore::File), s.count(PathStore::File));
+    QCOMPARE(t.entries(PathStore::Folder), s.entries(PathStore::Folder));
+    QCOMPARE(t.entries(PathStore::File), s.entries(PathStore::File));
+    // Kinds survive; scaffold segments stay scaffold.
+    QVERIFY(t.isEntry(t.find("/home/projects"), PathStore::Folder));
+    QVERIFY(!t.isEntry(t.find("/home")));
+    // Search works on the loaded store, including non-ASCII.
+    QCOMPARE(t.search("readme", PathStore::File, QString(), 100),
+             QStringList{QStringLiteral("/home/projects/app/README.md")});
+    QCOMPARE(t.search(QString::fromUtf8("büro"), PathStore::File, QString(), 100),
+             QStringList{QString::fromUtf8("/home/Büro/Café-Liste.pdf")});
+    // The loaded store accepts new entries.
+    QVERIFY(t.findOrCreatePath("/home/new.txt", PathStore::File) > 0);
+}
+
+void PathStoreTest::saveDropsTombstonedNodes()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    s.markDeletedRecursive(s.find("/home/projects/app"));
+    const int folders = s.count(PathStore::Folder);
+    const int files = s.count(PathStore::File);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::Folder), folders);
+    QCOMPARE(t.count(PathStore::File), files);
+    // Tombstoned subtree is physically gone, not just flagged.
+    QCOMPARE(t.find("/home/projects/app"), -1);
+    QCOMPARE(t.find("/home/projects/app/README.md"), -1);
+    // Scaffold ancestors of live entries survive the drop.
+    QVERIFY(t.find("/home/projects") >= 0);
+    QCOMPARE(t.search("notes", PathStore::File, QString(), 100),
+             QStringList{QStringLiteral("/home/notes.txt")});
+}
+
+void PathStoreTest::loadRefusesWrongFingerprint()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    PathStore t;
+    QVERIFY(!t.loadFrom(file, QByteArrayLiteral("different-fingerprint")));
+    // Refusal leaves the store empty and usable.
+    QCOMPARE(t.count(PathStore::Folder), 0);
+    QCOMPARE(t.count(PathStore::File), 0);
+    QVERIFY(t.addChild(0, "fresh", PathStore::Folder) > 0);
+}
+
+void PathStoreTest::loadRefusesTruncatedFile()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::ReadWrite));
+    QVERIFY(f.resize(f.size() - 7));
+    f.close();
+
+    PathStore t;
+    QVERIFY(!t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::File), 0);
+}
+
+void PathStoreTest::loadRefusesGarbage()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("this is not a snapshot at all, not even close");
+    f.close();
+
+    PathStore t;
+    QVERIFY(!t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::File), 0);
+    // Missing file refuses too.
+    QVERIFY(!t.loadFrom(tmp.path() + "/missing.bin", kTestFingerprint));
+}
+
+void PathStoreTest::snapshotTiming100k()
+{
+    // Not a gate — reports save/load wall time for a 100k-entry store so
+    // regressions surface in the test log (concept gate: ≤ 1 s for 2 M).
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    QList<qint32> dirs;
+    for (int i = 0; i < 100; ++i) {
+        const qint32 top = s.addChild(0, QString("dir-%1").arg(i).toUtf8(),
+                                      PathStore::Folder);
+        for (int j = 0; j < 40; ++j) {
+            dirs.append(s.addChild(top, QString("sub-%1").arg(j).toUtf8(),
+                                   PathStore::Folder));
+        }
+    }
+    int entries = 100 + dirs.size();
+    for (int i = 0; entries < 100'000; ++i, ++entries) {
+        s.addChild(dirs.at(i % dirs.size()),
+                   QString("file-%1.txt").arg(i).toUtf8(), PathStore::File);
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+    const qint64 saveMs = timer.restart();
+
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+    const qint64 loadMs = timer.elapsed();
+
+    QCOMPARE(t.count(PathStore::File), s.count(PathStore::File));
+    qInfo("snapshot 100k entries: save %lld ms, load %lld ms, %lld KB",
+          saveMs, loadMs, QFileInfo(file).size() / 1024);
+    QVERIFY(saveMs < 2000);
+    QVERIFY(loadMs < 2000);
+}
+
+// ---------------------------------------------------------------------------
 // G1 memory gate
 // ---------------------------------------------------------------------------
 
