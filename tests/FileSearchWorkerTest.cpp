@@ -129,6 +129,29 @@ void FileSearchWorkerTest::testCancelStopsPendingSearch()
     QVERIFY(!spy.wait(200));
 }
 
+void FileSearchWorkerTest::testRapidSupersedeEmitsOnlyLast()
+{
+    // Searches now run off-thread; three keystrokes in quick succession must
+    // settle on the LAST query's results, never a superseded one flashing in.
+    auto *c = FileCacheManager::instance();
+    c->addFile("/Users/me/alpha/alpha.txt");
+    c->addFile("/Users/me/beta/beta.txt");
+    c->addFile("/Users/me/gamma/gamma.txt");
+
+    FileSearchWorker w;
+    QSignalSpy spy(&w, &FileSearchWorker::resultsReady);
+    w.search("alpha");
+    w.search("beta");
+    w.search("gamma");  // only this one should win
+
+    QVERIFY(spy.wait(3000));
+    // Let any stragglers arrive, then assert the final state is "gamma".
+    QTest::qWait(300);
+    auto last = spy.last().first().value<QList<SearchResult>>();
+    QCOMPARE(last.size(), 1);
+    QCOMPARE(last.first().displayName, QString("gamma.txt"));
+}
+
 void FileSearchWorkerTest::testFuzzyScoreReturnsPositiveForBasename()
 {
     int s = FolderSearchWorker::fuzzyScore(

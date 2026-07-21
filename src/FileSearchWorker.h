@@ -3,6 +3,7 @@
 
 #include "FolderSearchWorker.h"  // for SearchResult
 
+#include <QFuture>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -36,11 +37,22 @@ private slots:
     void performSearch();
 
 private:
+    // The actual O(n) cache scan + scoring. Runs on a background thread,
+    // reads no member state (all inputs passed by value), so it's safe to
+    // call while the GUI thread mutates the worker.
+    static QList<SearchResult> computeResults(const QString &query,
+                                              const QString &rootPath,
+                                              bool includeHidden);
+
     QTimer *m_debounceTimer = nullptr;
     QString m_pendingQuery;
     QString m_pendingRootPath;
     bool m_searching = false;
     bool m_includeHidden = false;
+    // Bumped on every performSearch()/cancel() (GUI thread only). A finished
+    // background search whose generation != this is stale and gets dropped.
+    quint64 m_generation = 0;
+    QFuture<void> m_future;
 };
 
 #endif // FILESEARCHWORKER_H
