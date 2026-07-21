@@ -110,13 +110,22 @@ public:
                        const QString &rootPath, int maxResults) const;
 
 private:
-    struct Node {                       // 12 bytes
+    struct Node {                       // 20 bytes
         qint32  parent;                 // -1 for the "/" root
+        qint32  firstChild;             // head of the child chain, or -1
+        qint32  nextSibling;            // next child under the same parent, or -1
         quint32 nameOff;                // offset into m_names
         quint8  nameLen;                // macOS names ≤ 255 UTF-8 bytes
         quint8  flags;                  // kKindFile | kEntry | kNonAscii | kHasChild
         quint16 pad;
     };
+    // firstChild/nextSibling form a per-parent singly-linked child list so
+    // childByName() and childrenOf() are O(#children of the dir) instead of
+    // O(total nodes). Without it, every FSEvents change event ran an O(2M)
+    // scan on the MAIN thread (find + childrenOf), which beach-balled the UI
+    // during file-system bursts (Dropbox sync, builds). The links are derived
+    // from `parent`, so they are NOT trusted from a snapshot — loadFrom()
+    // rebuilds them in one pass. Cost: +8 B/node (~16 MB at 2M nodes).
     static constexpr quint8 kKindFile = 1;   // 0 = Folder
     static constexpr quint8 kEntry    = 2;   // live cached entry (vs scaffold/tombstone)
     static constexpr quint8 kNonAscii = 4;   // name needs Unicode-aware matching

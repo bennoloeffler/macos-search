@@ -636,7 +636,10 @@ void PathStoreTest::memoryGateG1()
     const int total = s.count(PathStore::Folder) + s.count(PathStore::File);
     QCOMPARE(total, target);
     const double perEntry = double(s.bytesUsed()) / total;
-    qInfo("G1: %.1f bytes/entry (gate: 36, baseline was ~730)", perEntry);
-    QVERIFY2(perEntry <= 36.0,
-             qPrintable(QString("G1 gate: %1 bytes/entry > 36").arg(perEntry)));
+    // Gate raised 36 → 44 when Node grew 12 → 20 bytes for the child-link
+    // index (O(1) tree ops, fixes the main-thread FSEvents beach-ball).
+    // ~44 B/entry is still a ~16× reduction from the ~730 B/entry baseline.
+    qInfo("G1: %.1f bytes/entry (gate: 44, baseline was ~730)", perEntry);
+    QVERIFY2(perEntry <= 44.0,
+             qPrintable(QString("G1 gate: %1 bytes/entry > 44").arg(perEntry)));
 }

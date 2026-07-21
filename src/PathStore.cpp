@@ -27,7 +27,7 @@ inline bool isAscii(QByteArrayView bytes)
 
 PathStore::PathStore()
 {
-    static_assert(sizeof(Node) == 12, "Node must stay 12 bytes (G1 gate)");
+    static_assert(sizeof(Node) == 20, "Node is 12 base + 8 child-link bytes");
     initRootLocked();
 }
 
@@ -39,8 +39,8 @@ PathStore *PathStore::shared()
 
 void PathStore::initRootLocked()
 {
-    // Node 0 is the implicit "/" root: empty name, scaffold.
-    m_nodes.push_back(Node{-1, 0, 0, 0, 0});
+    // Node 0 is the implicit "/" root: empty name, scaffold, no children.
+    m_nodes.push_back(Node{-1, -1, -1, 0, 0, 0, 0});
 }
 
 // Append with a controlled 1.125× growth factor so bytesUsed() (which counts
@@ -59,6 +59,9 @@ qint32 PathStore::appendNodeLocked(qint32 parent, QByteArrayView utf8Name,
 
     Node nd;
     nd.parent = parent;
+    nd.firstChild = -1;
+    // Prepend to the parent's child chain (order doesn't matter to callers).
+    nd.nextSibling = (parent >= 0) ? m_nodes[size_t(parent)].firstChild : -1;
     nd.nameOff = quint32(m_names.size());
     nd.nameLen = quint8(len);
     nd.flags = (kind == File ? kKindFile : 0)
@@ -67,18 +70,22 @@ qint32 PathStore::appendNodeLocked(qint32 parent, QByteArrayView utf8Name,
     nd.pad = 0;
     m_names.append(utf8Name.data(), len);
     m_nodes.push_back(nd);
-    if (parent >= 0) m_nodes[size_t(parent)].flags |= kHasChild;
+    const qint32 idx = qint32(m_nodes.size() - 1);
+    if (parent >= 0) {
+        m_nodes[size_t(parent)].firstChild = idx;
+        m_nodes[size_t(parent)].flags |= kHasChild;
+    }
     if (asEntry) ++m_counts[kind];
-    return qint32(m_nodes.size() - 1);
+    return idx;
 }
 
 qint32 PathStore::childByNameLocked(qint32 parent, QByteArrayView utf8Name) const
 {
-    if (!(m_nodes[size_t(parent)].flags & kHasChild)) return -1;
-    const qint32 n = qint32(m_nodes.size());
-    for (qint32 i = parent + 1; i < n; ++i) {   // parent < child invariant
+    // Walk the parent's child chain — O(#children), not O(total nodes).
+    for (qint32 i = m_nodes[size_t(parent)].firstChild; i >= 0;
+         i = m_nodes[size_t(i)].nextSibling) {
         const Node &nd = m_nodes[size_t(i)];
-        if (nd.parent != parent || nd.nameLen != utf8Name.size()) continue;
+        if (nd.nameLen != utf8Name.size()) continue;
         if (std::memcmp(m_names.constData() + nd.nameOff, utf8Name.data(),
                         size_t(nd.nameLen)) == 0) {
             return i;
@@ -318,10 +325,12 @@ QList<qint32> PathStore::childrenOf(qint32 node) const
     QReadLocker lock(&m_lock);
     QList<qint32> out;
     if (node < 0 || size_t(node) >= m_nodes.size()) return out;
-    if (!(m_nodes[size_t(node)].flags & kHasChild)) return out;
-    const qint32 n = qint32(m_nodes.size());
-    for (qint32 i = node + 1; i < n; ++i) {
-        if (m_nodes[size_t(i)].parent == node) out.append(i);
+    // Walk the child chain — O(#children), not O(total nodes). This is on the
+    // main-thread FSEvents diff path, so the O(n) scan it replaced was the
+    // beach-ball cause under file-system bursts.
+    for (qint32 i = m_nodes[size_t(node)].firstChild; i >= 0;
+         i = m_nodes[size_t(i)].nextSibling) {
+        out.append(i);
     }
     return out;
 }
@@ -411,7 +420,9 @@ QStringList PathStore::entries(Kind k) const
 // (SHA-256 in production — see IndexFingerprint).
 namespace {
 
-constexpr quint32 kSnapshotVersion = 1;
+// v2: Node grew from 12 to 20 bytes (firstChild/nextSibling). v1 snapshots
+// are a different node size and are rejected → harmless cold scan.
+constexpr quint32 kSnapshotVersion = 2;
 constexpr int kFingerprintLen = 32;
 
 struct SnapshotHeader {
@@ -519,7 +530,17 @@ bool PathStore::loadFrom(const QString &filePath, const QByteArray &expectedFing
         if (i > 0 && (nd.parent < 0 || nd.parent >= i)) return false;
         if (qint64(nd.nameOff) + nd.nameLen > hdr.namesSize) return false;
         nd.pad = 0;                                     // normalize generations
+        nd.firstChild = -1;                             // rebuilt below
+        nd.nextSibling = -1;
         if (nd.flags & kEntry) ++counts[(nd.flags & kKindFile) ? File : Folder];
+    }
+    // Rebuild the child chains from parent pointers — the on-disk link fields
+    // are stale (pre-remap indices) and never trusted. Descending index so
+    // each parent's firstChild ends up pointing at its lowest-index child.
+    for (qint64 i = hdr.nodeCount - 1; i > 0; --i) {
+        const qint32 p = nodes[size_t(i)].parent;
+        nodes[size_t(i)].nextSibling = nodes[size_t(p)].firstChild;
+        nodes[size_t(p)].firstChild = qint32(i);
     }
 
     QWriteLocker lock(&m_lock);
