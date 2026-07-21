@@ -12,7 +12,7 @@
 #include <QQueue>
 #include <QWaitCondition>
 
-class QFileSystemWatcher;
+class FsEventsWatcher;
 class ExcludeSettings;
 class PathStore;
 
@@ -22,6 +22,8 @@ class PathStore;
 class PathCacheManager : public QObject
 {
     Q_OBJECT
+    // Drives onDirectoryChanged() directly to test the untracked-path guard.
+    friend class FsEventsSyncTest;
 
 public:
     static PathCacheManager* instance();
@@ -91,6 +93,8 @@ signals:
 
 private slots:
     void onDirectoryChanged(const QString &path);
+    // FSEvents dropped events under `path` (MustScanSubDirs): re-walk it.
+    void onRescanNeeded(const QString &path);
 
 private:
     explicit PathCacheManager(QObject *parent = nullptr);
@@ -112,6 +116,14 @@ private:
 
     // Add a folder entry (creating intermediate nodes); returns its node.
     qint32 addPathToCache(const QString &path);
+
+    // Walk a newly-appeared directory subtree into the caches (main thread,
+    // live-update path). Unlike expandTo(), it ignores m_completedRoots — the
+    // new subtree lives *under* an already-completed root, so expandTo would
+    // wrongly skip it. Honors excludes, path-level excludes, and the
+    // don't-descend-symlinks/bundles rules. FSEvents delivers child events
+    // out of order, so we cannot rely on a per-level event cascade.
+    void indexNewSubtree(const QString &dirPath);
 
     // Parallel scan queue — each pending directory carries its resolved
     // PathStore node so workers never re-resolve paths.
@@ -178,9 +190,14 @@ signals:
 
 private:
 
-    // Filesystem watcher for real-time updates
-    QFileSystemWatcher *m_watcher = nullptr;
-    bool m_watcherLimitReached = false;
+    // Real-time change tracking via one recursive FSEvents stream over the
+    // completed scan roots (replaces the old QFileSystemWatcher, which only
+    // ever watched $HOME — 1 of ~216k dirs — and can't scale on macOS).
+    FsEventsWatcher *m_fsWatcher = nullptr;
+
+    // Top-level reduction of m_completedRoots — the set the FSEvents stream
+    // covers. Re-armed after each completed scan.
+    QStringList watchRoots() const;
 
     // Set when a snapshot was loaded at startup; cleared on the first live
     // scanComplete so the UI can show "verifying…" only while reconciling.

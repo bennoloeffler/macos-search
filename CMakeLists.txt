@@ -58,6 +58,8 @@ set(MACOS_SEARCH_LIB_SOURCES
     src/EditorLauncher.h
     src/Bench.cpp
 src/ScanQueue.h
+src/FsEventsWatcher.cpp
+src/FsEventsWatcher.h
     src/Bench.h
     src/SearchResultDelegate.cpp
     src/SearchResultDelegate.h
@@ -122,6 +124,7 @@ target_link_libraries(macos-search PRIVATE
     Qt6::Widgets
     Qt6::Concurrent
     "-framework Carbon"
+    "-framework CoreServices"
 )
 
 set_target_properties(macos-search PROPERTIES
@@ -167,6 +170,8 @@ set(MACOS_SEARCH_TEST_SOURCES
     tests/PathStoreTest.h
     tests/ScanQueueTest.cpp
     tests/ScanQueueTest.h
+    tests/FsEventsSyncTest.cpp
+    tests/FsEventsSyncTest.h
     tests/PathCacheManagerTest.cpp
     tests/PathCacheManagerTest.h
     tests/SearchFieldTest.cpp
@@ -224,6 +229,7 @@ target_link_libraries(macos-search_tests PRIVATE
     Qt6::Concurrent
     Qt6::Test
     "-framework Carbon"
+    "-framework CoreServices"
 )
 
 set_target_properties(macos-search_tests PROPERTIES

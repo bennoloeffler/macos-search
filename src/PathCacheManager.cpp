@@ -6,7 +6,10 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QHash>
-#include <QFileSystemWatcher>
+#include "FsEventsWatcher.h"
+
+// Defined below; used by onDirectoryChanged/onRescanNeeded above their bodies.
+static bool isPathLevelExcluded(const QString &absolutePath);
 #include <QFileInfo>
 #include <QQueue>
 #include <QMetaObject>
@@ -31,10 +34,14 @@ PathCacheManager::PathCacheManager(QObject *parent)
     m_softCap.storeRelease(kDefaultSoftCap);
     m_hardCeiling.storeRelease(kDefaultHardCeiling);
 
-    // Create filesystem watcher on main thread
-    m_watcher = new QFileSystemWatcher(this);
-    connect(m_watcher, &QFileSystemWatcher::directoryChanged,
+    // One recursive FSEvents stream, armed with the completed scan roots
+    // after each scan (see finishScan). Lives on the main thread; its
+    // signals arrive here on the main thread.
+    m_fsWatcher = new FsEventsWatcher(0.5, this);
+    connect(m_fsWatcher, &FsEventsWatcher::directoryChanged,
             this, &PathCacheManager::onDirectoryChanged);
+    connect(m_fsWatcher, &FsEventsWatcher::rescanNeeded,
+            this, &PathCacheManager::onRescanNeeded);
 }
 
 void PathCacheManager::setSoftCap(int newCap)
@@ -139,7 +146,6 @@ void PathCacheManager::startScan()
     m_scanning.storeRelease(1);
     m_foldersIndexed.storeRelease(0);
     m_foldersExcluded.storeRelease(0);
-    m_watcherLimitReached = false;
     {
         QMutexLocker locker(&m_mutex);
         m_currentScanRoot = QDir::homePath();
@@ -177,11 +183,9 @@ void PathCacheManager::rescan()
     m_ceilingReached.storeRelease(0);
     // The file cache is rebuilt by the same scan walks; clear it in lockstep.
     FileCacheManager::instance()->clear();
-    // Clear watcher
-    QStringList watched = m_watcher->directories();
-    if (!watched.isEmpty()) {
-        m_watcher->removePaths(watched);
-    }
+    // Stop watching during the full rebuild; finishScan re-arms the stream
+    // with the fresh completed roots.
+    m_fsWatcher->stop();
     startScan();
 }
 
@@ -492,23 +496,32 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         return;
     }
 
-    // A watched directory changed - rescan just that directory
-    QDir dir(path);
+    // FSEvents delivers canonical paths, often with a trailing slash — clean
+    // them so store lookups and prefix maths line up.
+    const QString clean = QDir::cleanPath(path);
     constexpr quint8 kBothKinds = (1u << PathStore::Folder) | (1u << PathStore::File);
 
+    // Guard: only diff a directory we actually track. An event for an
+    // untracked or excluded directory must NOT synthesize a phantom node
+    // (the old code called ensurePath() here). If the dir itself isn't in
+    // the store, its parent's own event covers any relevant change.
+    if (isPathLevelExcluded(clean)) return;
+    {
+        const QString base = QFileInfo(clean).fileName();
+        if (m_excludeSettings && m_excludeSettings->shouldExclude(base)) return;
+    }
+    const qint32 dirNode = m_store->find(clean);
+    if (dirNode < 0) return;
+
+    QDir dir(clean);
     if (!dir.exists()) {
         // Directory was deleted - remove it and all children from cache
         // But only if we can confirm it's truly gone (not just temporarily unreadable)
-        if (QFileInfo(path).exists()) {
+        if (QFileInfo(clean).exists()) {
             // Directory exists but is unreadable - don't remove from cache
             return;
         }
-        const qint32 node = m_store->find(path);
-        if (node >= 0) {
-            QStringList deadFolders;
-            m_store->markDeletedRecursive(node, kBothKinds, &deadFolders);
-            for (const QString &p : deadFolders) m_watcher->removePath(p);
-        }
+        m_store->markDeletedRecursive(dirNode, kBothKinds, nullptr);
         emit cacheUpdated();
         return;
     }
@@ -521,8 +534,7 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
 
     // Snapshot cached children (folders and files) of this directory —
     // childrenOf() instead of a full-cache sweep per fs event.
-    const QString prefix = path.endsWith('/') ? path : path + "/";
-    const qint32 dirNode = m_store->ensurePath(path);
+    const QString prefix = clean + "/";
     QHash<QString, qint32> cachedFolders, cachedFilesHere;
     for (qint32 c : m_store->childrenOf(dirNode)) {
         if (m_store->isEntry(c, PathStore::Folder)) {
@@ -532,19 +544,22 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         }
     }
 
-    // Find new directories
+    // Find new directories. The FSEvents stream is recursive, so no
+    // per-directory registration is needed — but a newly-created directory's
+    // subtree must be walked (its own create event may arrive before or after
+    // this one, and a rename delivers only the parent event). expandTo()
+    // enqueues the walk (or starts one) without clearing the cache; it no-ops
+    // if the subtree is already covered.
     for (const QString &entry : currentEntries) {
         if (m_excludeSettings && m_excludeSettings->shouldExclude(entry)) {
             continue;
         }
         if (cachedFolders.contains(entry)) continue;
-        // New directory - add to cache and watcher
-        addPathToCache(prefix + entry);
-        if (!m_watcherLimitReached) {
-            if (!m_watcher->addPath(prefix + entry)) {
-                m_watcherLimitReached = true;
-            }
-        }
+        const QString childPath = prefix + entry;
+        addPathToCache(childPath);
+        // Walk its subtree now — FSEvents delivers descendant events out of
+        // order, so we can't wait for the child's own event to arrive.
+        indexNewSubtree(childPath);
     }
 
     // Find deleted directories
@@ -554,9 +569,7 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         // Double-check: is the directory actually deleted, or just unreadable?
         if (QFileInfo(prefix + it.key()).exists()) continue;
         // Directory was truly deleted - remove it and all children
-        QStringList deadFolders;
-        m_store->markDeletedRecursive(it.value(), kBothKinds, &deadFolders);
-        for (const QString &p : deadFolders) m_watcher->removePath(p);
+        m_store->markDeletedRecursive(it.value(), kBothKinds, nullptr);
     }
 
     // File-level diff: pick up newly created and removed files in this
@@ -896,10 +909,8 @@ void PathCacheManager::performScan()
         m_scanQueue.enqueue({homeDir, homeNode});
     }
 
-    // Add home dir to watcher
-    QMetaObject::invokeMethod(m_watcher, [this, homeDir]() {
-        m_watcher->addPath(homeDir);
-    }, Qt::QueuedConnection);
+    // The FSEvents stream is armed once, recursively, in finishScan() after
+    // the root completes — no per-directory registration during the walk.
 
     // Determine number of workers (use available cores, max 8)
     m_numWorkers = qMin(QThread::idealThreadCount(), 8);
@@ -986,11 +997,66 @@ void PathCacheManager::finishScan(const QString &completedRoot, QThread *progres
     const int indexed = m_foldersIndexed.loadAcquire();
     const int excluded = m_foldersExcluded.loadAcquire();
 
-    // Emit completion on main thread
-    QMetaObject::invokeMethod(this, [this, indexed, excluded]() {
+    // Re-arm the recursive FSEvents stream on the main thread (it owns the
+    // CF stream + dispatch queue) so live create/delete/rename under every
+    // completed root now flows into onDirectoryChanged.
+    const QStringList roots = watchRoots();
+    QMetaObject::invokeMethod(this, [this, roots, indexed, excluded]() {
+        m_fsWatcher->setRoots(roots);
         emit scanComplete(indexed, excluded);
         emit cacheUpdated();
     }, Qt::QueuedConnection);
+}
+
+QStringList PathCacheManager::watchRoots() const
+{
+    QMutexLocker locker(&m_mutex);
+    // FsEventsWatcher::setRoots() reduces these to top-level ancestors.
+    return QStringList(m_completedRoots.cbegin(), m_completedRoots.cend());
+}
+
+void PathCacheManager::onRescanNeeded(const QString &path)
+{
+    // FSEvents dropped events under `path`: one directory diff isn't enough,
+    // re-walk the whole subtree (it lives under a completed root, so expandTo
+    // would skip it).
+    if (m_stopRequested.loadAcquire()) return;
+    const QString clean = QDir::cleanPath(path);
+    if (isPathLevelExcluded(clean)) return;
+    if (m_store->find(clean) < 0) return;
+    indexNewSubtree(clean);
+    emit cacheUpdated();
+}
+
+void PathCacheManager::indexNewSubtree(const QString &dirPath)
+{
+    if (m_stopRequested.loadAcquire()) return;
+    QDir dir(dirPath);
+    if (!dir.exists() || !dir.isReadable()) return;
+
+    QStringList toRecurse;
+    const QFileInfoList subs = dir.entryInfoList(
+        QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable | QDir::Hidden);
+    for (const QFileInfo &info : subs) {
+        const QString name = info.fileName();
+        if (m_excludeSettings && m_excludeSettings->shouldExclude(name)) continue;
+        const QString full = dirPath + "/" + name;
+        if (isPathLevelExcluded(full)) continue;
+        addPathToCache(full);
+        // Symlinked dirs and opaque bundles are cached but never descended.
+        if (info.isSymLink() || isOpaqueBundle(name)) continue;
+        toRecurse.append(full);
+    }
+
+    const QStringList files = dir.entryList(
+        QDir::Files | QDir::NoDotAndDotDot | QDir::Readable | QDir::Hidden);
+    FileCacheManager *fc = FileCacheManager::instance();
+    for (const QString &f : files) {
+        if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(f)) continue;
+        fc->addFile(dirPath + "/" + f);
+    }
+
+    for (const QString &c : toRecurse) indexNewSubtree(c);
 }
 
 // Snapshot warm-start (docs/210_persistent_index.md) --------------------------

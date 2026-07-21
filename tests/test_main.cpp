@@ -16,6 +16,7 @@
 #include "ExcludeSettingsTest.h"
 #include "PathStoreTest.h"
 #include "ScanQueueTest.h"
+#include "FsEventsSyncTest.h"
 #include "PathCacheManagerTest.h"
 #include "SearchFieldTest.h"
 #include "PathSelectorStateTest.h"
@@ -101,6 +102,7 @@ int main(int argc, char *argv[])
     RUN_TEST(ScanStateIndicatorTest, t21);
     RUN_TEST(PathStoreTest, t22);
     RUN_TEST(ScanQueueTest, t23);
+    RUN_TEST(FsEventsSyncTest, t24);
 
     return status;
 }
