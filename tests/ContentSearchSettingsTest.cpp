@@ -1,5 +1,6 @@
 #include "ContentSearchSettingsTest.h"
 #include "ContentSearchSettings.h"
+#include "FileCacheManager.h"
 
 #include <QSettings>
 #include <QSignalSpy>
@@ -35,7 +36,41 @@ void ContentSearchSettingsTest::testDefaultsAreSensible()
     ContentSearchSettings s;
     QCOMPARE(s.threshold(), 1000);
     QCOMPARE(s.maxFileSizeMB(), 5);
-    QCOMPARE(s.fileCacheCap(), 500000);
+    QCOMPARE(s.fileCacheCap(), FileCacheManager::kDefaultSoftCap);
+}
+
+void ContentSearchSettingsTest::testFileCacheCapDefaultMatchesFileCacheManager()
+{
+    QCOMPARE(ContentSearchSettings::defaultFileCacheCap(),
+             FileCacheManager::kDefaultSoftCap);
+}
+
+void ContentSearchSettingsTest::testFileCacheCapLegacyDefaultMigrates()
+{
+    // Installs that ever saved settings persisted the old 500000 default;
+    // it must not keep truncating the file index after the caps were raised.
+    {
+        QSettings s;
+        s.beginGroup("ContentSearchSettings");
+        s.setValue("fileCacheCap", 500000);
+        s.endGroup();
+        s.sync();
+    }
+    ContentSearchSettings s;
+    QCOMPARE(s.fileCacheCap(), FileCacheManager::kDefaultSoftCap);
+}
+
+void ContentSearchSettingsTest::testFileCacheCapCustomValueSurvivesLoad()
+{
+    {
+        QSettings s;
+        s.beginGroup("ContentSearchSettings");
+        s.setValue("fileCacheCap", 750000);
+        s.endGroup();
+        s.sync();
+    }
+    ContentSearchSettings s;
+    QCOMPARE(s.fileCacheCap(), 750000);
 }
 
 void ContentSearchSettingsTest::testThresholdClampedLow()

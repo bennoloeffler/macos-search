@@ -34,7 +34,10 @@ public:
     // File-cache cap (files indexed by name). Default 500_000.
     int fileCacheCap() const;
     void setFileCacheCap(int value);
-    static int defaultFileCacheCap() { return 500000; }
+    // Follows FileCacheManager::kDefaultSoftCap (defined in the .cpp to
+    // avoid the header dependency). Was hardcoded 500000 until 2026-07-21 —
+    // load() migrates that persisted legacy value up.
+    static int defaultFileCacheCap();
 
     // Lowercased extensions to skip when content-searching ("png", "jpg", ...).
     QStringList extensionBlacklist() const;

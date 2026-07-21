@@ -17,6 +17,11 @@ private slots:
     void testThresholdPersists();
     void testMaxFileSizeMinClamped();
     void testFileCacheCapMinClamped();
+    // 2026-07-21: the content-search cap default must follow the file
+    // cache's real default, and a persisted legacy 500k migrates up.
+    void testFileCacheCapDefaultMatchesFileCacheManager();
+    void testFileCacheCapLegacyDefaultMigrates();
+    void testFileCacheCapCustomValueSurvivesLoad();
     void testExtensionBlacklistContainsImageDefaults();
     void testExtensionBlacklistContainsArchiveDefaults();
     void testIsExtensionBlacklistedCaseInsensitive();

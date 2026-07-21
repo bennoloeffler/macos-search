@@ -1,4 +1,5 @@
 #include "ContentSearchSettings.h"
+#include "FileCacheManager.h"
 
 #include <QFileInfo>
 #include <QReadLocker>
@@ -56,6 +57,11 @@ void ContentSearchSettings::setMaxFileSizeMB(int value)
         save();
         emit settingsChanged();
     }
+}
+
+int ContentSearchSettings::defaultFileCacheCap()
+{
+    return FileCacheManager::kDefaultSoftCap;
 }
 
 int ContentSearchSettings::fileCacheCap() const
@@ -160,6 +166,10 @@ void ContentSearchSettings::load()
 
     m_fileCacheCap = settings.value("fileCacheCap", defaultFileCacheCap()).toInt();
     if (m_fileCacheCap < 1000) m_fileCacheCap = 1000;
+    // Migration: 500000 was the hardcoded default until 2026-07-21 and got
+    // persisted by any save(); treat it as "never chosen" and follow the
+    // (much higher) current default instead of truncating the file index.
+    if (m_fileCacheCap == 500000) m_fileCacheCap = defaultFileCacheCap();
 
     if (settings.contains("extensionBlacklist")) {
         const QStringList stored = settings.value("extensionBlacklist").toStringList();
