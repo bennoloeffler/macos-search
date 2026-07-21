@@ -16,3 +16,6 @@ compile_commands.json
 
 # Screenshots — captured locally for dev / UI review, not source of truth
 screenshots/
+
+# Claude Code agent worktrees (local only)
+.claude/worktrees/
