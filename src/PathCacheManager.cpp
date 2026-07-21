@@ -1,7 +1,9 @@
 #include "PathCacheManager.h"
 #include "ExcludeSettings.h"
 #include "FileCacheManager.h"
+#include "PathStore.h"
 #include <QDir>
+#include <QHash>
 #include <QFileSystemWatcher>
 #include <QFileInfo>
 #include <QQueue>
@@ -22,6 +24,7 @@ PathCacheManager* PathCacheManager::instance()
 PathCacheManager::PathCacheManager(QObject *parent)
     : QObject(parent)
 {
+    m_store = PathStore::shared();
     m_softCap.storeRelease(kDefaultSoftCap);
     m_hardCeiling.storeRelease(kDefaultHardCeiling);
 
@@ -37,8 +40,7 @@ void PathCacheManager::setSoftCap(int newCap)
     const int hard = m_hardCeiling.loadAcquire();
     if (newCap > hard) newCap = hard;
     m_softCap.storeRelease(newCap);
-    QMutexLocker locker(&m_mutex);
-    if (m_paths.size() >= newCap) {
+    if (m_store->count(PathStore::Folder) >= newCap) {
         m_capReached.storeRelease(1);
     } else {
         m_capReached.storeRelease(0);
@@ -52,8 +54,7 @@ void PathCacheManager::setHardCeiling(int newCeiling)
     if (m_softCap.loadAcquire() > newCeiling) {
         m_softCap.storeRelease(newCeiling);
     }
-    QMutexLocker locker(&m_mutex);
-    if (m_paths.size() >= newCeiling) {
+    if (m_store->count(PathStore::Folder) >= newCeiling) {
         m_ceilingReached.storeRelease(1);
     } else {
         m_ceilingReached.storeRelease(0);
@@ -164,11 +165,9 @@ void PathCacheManager::stopScan()
 void PathCacheManager::rescan()
 {
     stopScan();
+    m_store->clear();   // wipes folders AND files — one shared store
     {
         QMutexLocker locker(&m_mutex);
-        m_paths.clear();
-        m_lowerPaths.clear();
-        m_pathSet.clear();
         m_completedRoots.clear();
     }
     m_capReached.storeRelease(0);
@@ -195,57 +194,30 @@ bool PathCacheManager::isComplete() const
 
 int PathCacheManager::folderCount() const
 {
-    QMutexLocker locker(&m_mutex);
-    return static_cast<int>(m_paths.size());
+    return m_store->count(PathStore::Folder);
 }
 
 QStringList PathCacheManager::cachedPaths() const
 {
-    QMutexLocker locker(&m_mutex);
-    return m_paths;
+    return m_store->entries(PathStore::Folder);
 }
 
 QStringList PathCacheManager::search(const QString &query, const QString &rootPath, int maxResults) const
 {
-    if (query.isEmpty()) {
-        return {};
-    }
+    const QStringList matches =
+        m_store->search(query, PathStore::Folder, rootPath, maxResults);
 
-    QStringList terms = query.toLower().split(' ', Qt::SkipEmptyParts);
-    if (terms.isEmpty()) {
-        return {};
-    }
-
+    // "Subfolder of an existing result" suppression — folder-search only.
+    // Store results come in insertion order (parents before children), so
+    // the ≤ maxResults materialized paths are enough.
     QStringList results;
-
-    QMutexLocker locker(&m_mutex);
-    const int n = static_cast<int>(m_paths.size());
-    const QString rootPrefix = rootPath.isEmpty() ? QString() : rootPath + "/";
-    for (int i = 0; i < n; ++i) {
-        const QString &path = m_paths.at(i);
-        if (!rootPath.isEmpty() && !path.startsWith(rootPrefix) && path != rootPath) {
-            continue;
-        }
-        // Use the pre-lowercased parallel array so we don't pay toLower()
-        // per path per query.
-        const QString &lowerPath = m_lowerPaths.at(i);
-        bool allMatch = true;
-        for (const QString &term : terms) {
-            if (!lowerPath.contains(term)) { allMatch = false; break; }
-        }
-        if (!allMatch) continue;
-
-        // "Subfolder of an existing result" suppression — folder-search only.
+    for (const QString &path : matches) {
         bool isSubfolder = false;
         for (const QString &existing : results) {
             if (path.startsWith(existing + "/")) { isSubfolder = true; break; }
         }
-        if (!isSubfolder) {
-            results.append(path);
-            if (results.size() >= maxResults) break;
-        }
+        if (!isSubfolder) results.append(path);
     }
-
     return results;
 }
 
@@ -254,8 +226,8 @@ QStringList PathCacheManager::getSubdirectories(const QString &parentPath) const
     QStringList results;
     QString prefix = parentPath.endsWith('/') ? parentPath : parentPath + "/";
 
-    QMutexLocker locker(&m_mutex);
-    for (const QString &path : m_paths) {
+    const QStringList paths = m_store->entries(PathStore::Folder);
+    for (const QString &path : paths) {
         if (path.startsWith(prefix)) {
             // Get the immediate child directory name
             QString remainder = path.mid(prefix.length());
@@ -317,12 +289,12 @@ void PathCacheManager::restartScanFrom(const QString &rootPath)
         }
 
         // Add the root path to cache first
-        addPathToCache(normalizedRoot);
+        const qint32 rootNode = addPathToCache(normalizedRoot);
 
         // Initialize queue with the new root
         {
             QMutexLocker locker(&m_queueMutex);
-            m_scanQueue.enqueue(normalizedRoot);
+            m_scanQueue.enqueue({normalizedRoot, rootNode});
         }
 
         // Use parallel workers
@@ -407,10 +379,11 @@ void PathCacheManager::expandTo(const QString &rootPath)
             }
         }
 
-        // Check if path is already in cache (we already have it)
-        if (m_pathSet.contains(normalizedRoot)) {
-            return;
-        }
+    }
+
+    // Check if path is already in cache (we already have it)
+    if (m_store->isEntry(m_store->find(normalizedRoot), PathStore::Folder)) {
+        return;
     }
 
     // If currently scanning, add to queue instead of starting new scan
@@ -419,7 +392,7 @@ void PathCacheManager::expandTo(const QString &rootPath)
         // Add the root and its ancestors to queue
         QString current = normalizedRoot;
         while (!current.isEmpty() && current != "/") {
-            m_scanQueue.enqueue(current);
+            m_scanQueue.enqueue({current, m_store->ensurePath(current)});
             QDir dir(current);
             dir.cdUp();
             QString parent = dir.absolutePath();
@@ -457,12 +430,12 @@ void PathCacheManager::expandTo(const QString &rootPath)
         }
 
         // Add the root path to cache first
-        addPathToCache(normalizedRoot);
+        const qint32 rootNode = addPathToCache(normalizedRoot);
 
         // Initialize queue with the new root
         {
             QMutexLocker locker(&m_queueMutex);
-            m_scanQueue.enqueue(normalizedRoot);
+            m_scanQueue.enqueue({normalizedRoot, rootNode});
         }
 
         // Use parallel workers
@@ -529,36 +502,21 @@ void PathCacheManager::expandTo(const QString &rootPath)
     m_scanThread->start();
 }
 
-void PathCacheManager::addPathToCache(const QString &path)
+qint32 PathCacheManager::addPathToCache(const QString &path)
 {
-    if (m_ceilingReached.loadAcquire()) return;
-    QMutexLocker locker(&m_mutex);
-    if (m_pathSet.contains(path)) return;
     const int hard = m_hardCeiling.loadAcquire();
-    if (m_paths.size() >= hard) {
-        m_ceilingReached.storeRelease(1);
-        return;
-    }
-    if (m_paths.size() >= m_softCap.loadAcquire()) {
-        if (!m_capReached.loadAcquire()) m_capReached.storeRelease(1);
-        return;
-    }
-    m_paths.append(path);
-    m_lowerPaths.append(path.toLower());
-    m_pathSet.insert(path);
-}
-
-void PathCacheManager::removePathFromCache(const QString &path)
-{
-    QMutexLocker locker(&m_mutex);
-    if (m_pathSet.contains(path)) {
-        const int idx = m_paths.indexOf(path);
-        if (idx >= 0) {
-            m_paths.removeAt(idx);
-            m_lowerPaths.removeAt(idx);
+    const int soft = m_softCap.loadAcquire();
+    PathStore::Add status = PathStore::Add::Existed;
+    const qint32 node = m_store->findOrCreatePath(
+        path, PathStore::Folder, qMin(soft, hard), &status);
+    if (status == PathStore::Add::CapBlocked) {
+        if (m_store->count(PathStore::Folder) >= hard) {
+            m_ceilingReached.storeRelease(1);
+        } else if (!m_capReached.loadAcquire()) {
+            m_capReached.storeRelease(1);
         }
-        m_pathSet.remove(path);
     }
+    return node;   // valid (possibly scaffold) even when cap-blocked
 }
 
 void PathCacheManager::onDirectoryChanged(const QString &path)
@@ -571,31 +529,21 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
 
     // A watched directory changed - rescan just that directory
     QDir dir(path);
+    constexpr quint8 kBothKinds = (1u << PathStore::Folder) | (1u << PathStore::File);
 
     if (!dir.exists()) {
         // Directory was deleted - remove it and all children from cache
         // But only if we can confirm it's truly gone (not just temporarily unreadable)
-        QFileInfo info(path);
-        if (info.exists()) {
+        if (QFileInfo(path).exists()) {
             // Directory exists but is unreadable - don't remove from cache
             return;
         }
-
-        {
-            QMutexLocker locker(&m_mutex);
-            for (int i = m_paths.size() - 1; i >= 0; --i) {
-                const QString &cached = m_paths.at(i);
-                if (cached == path || cached.startsWith(path + "/")) {
-                    m_pathSet.remove(cached);
-                    m_watcher->removePath(cached);
-                    m_paths.removeAt(i);
-                    m_lowerPaths.removeAt(i);
-                }
-            }
+        const qint32 node = m_store->find(path);
+        if (node >= 0) {
+            QStringList deadFolders;
+            m_store->markDeletedRecursive(node, kBothKinds, &deadFolders);
+            for (const QString &p : deadFolders) m_watcher->removePath(p);
         }
-        // Also drop every file under the dead directory.
-        FileCacheManager::instance()->removeFile(path);
-        FileCacheManager::instance()->removeFilesUnder(path);
         emit cacheUpdated();
         return;
     }
@@ -606,19 +554,16 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
                                 | QDir::Readable | QDir::Hidden;
     QStringList currentEntries = dir.entryList(scanFilters);
 
-    // Get cached children of this directory
-    QSet<QString> cachedChildren;
-    {
-        QMutexLocker locker(&m_mutex);
-        for (const QString &cached : m_paths) {
-            if (cached.startsWith(path + "/")) {
-                // Extract immediate child
-                QString relative = cached.mid(path.length() + 1);
-                qsizetype slashPos = relative.indexOf('/');
-                if (slashPos == -1) {
-                    cachedChildren.insert(cached);
-                }
-            }
+    // Snapshot cached children (folders and files) of this directory —
+    // childrenOf() instead of a full-cache sweep per fs event.
+    const QString prefix = path.endsWith('/') ? path : path + "/";
+    const qint32 dirNode = m_store->ensurePath(path);
+    QHash<QString, qint32> cachedFolders, cachedFilesHere;
+    for (qint32 c : m_store->childrenOf(dirNode)) {
+        if (m_store->isEntry(c, PathStore::Folder)) {
+            cachedFolders.insert(m_store->nameOf(c), c);
+        } else if (m_store->isEntry(c, PathStore::File)) {
+            cachedFilesHere.insert(m_store->nameOf(c), c);
         }
     }
 
@@ -627,46 +572,26 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         if (m_excludeSettings && m_excludeSettings->shouldExclude(entry)) {
             continue;
         }
-
-        QString fullPath = path + "/" + entry;
-        if (!cachedChildren.contains(fullPath)) {
-            // New directory - add to cache and watcher
-            addPathToCache(fullPath);
-            if (!m_watcherLimitReached) {
-                if (!m_watcher->addPath(fullPath)) {
-                    m_watcherLimitReached = true;
-                }
+        if (cachedFolders.contains(entry)) continue;
+        // New directory - add to cache and watcher
+        addPathToCache(prefix + entry);
+        if (!m_watcherLimitReached) {
+            if (!m_watcher->addPath(prefix + entry)) {
+                m_watcherLimitReached = true;
             }
         }
     }
 
     // Find deleted directories
     // Only remove if the directory truly doesn't exist (not just unreadable)
-    for (const QString &cached : cachedChildren) {
-        QString name = cached.mid(path.length() + 1);
-        if (!currentEntries.contains(name)) {
-            // Double-check: is the directory actually deleted, or just unreadable?
-            QFileInfo info(cached);
-            if (info.exists()) {
-                // Directory exists but wasn't in entryList (unreadable) - keep in cache
-                continue;
-            }
-
-            // Directory was truly deleted - remove it and all children
-            {
-                QMutexLocker locker(&m_mutex);
-                for (int i = m_paths.size() - 1; i >= 0; --i) {
-                    const QString &p = m_paths.at(i);
-                    if (p == cached || p.startsWith(cached + "/")) {
-                        m_pathSet.remove(p);
-                        m_watcher->removePath(p);
-                        m_paths.removeAt(i);
-                        m_lowerPaths.removeAt(i);
-                    }
-                }
-            }
-            FileCacheManager::instance()->removeFilesUnder(cached);
-        }
+    for (auto it = cachedFolders.cbegin(); it != cachedFolders.cend(); ++it) {
+        if (currentEntries.contains(it.key())) continue;
+        // Double-check: is the directory actually deleted, or just unreadable?
+        if (QFileInfo(prefix + it.key()).exists()) continue;
+        // Directory was truly deleted - remove it and all children
+        QStringList deadFolders;
+        m_store->markDeletedRecursive(it.value(), kBothKinds, &deadFolders);
+        for (const QString &p : deadFolders) m_watcher->removePath(p);
     }
 
     // File-level diff: pick up newly created and removed files in this
@@ -678,31 +603,19 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         const QStringList currentFiles = dir.entryList(fileFilters);
         FileCacheManager *fileCache = FileCacheManager::instance();
 
-        // Snapshot of cached files directly under `path` (one level deep).
-        QStringList cachedFilesHere;
-        const QString prefix = path.endsWith('/') ? path : path + "/";
-        for (const QString &p : fileCache->cachedFiles()) {
-            if (p.startsWith(prefix)) {
-                const QString remainder = p.mid(prefix.length());
-                if (!remainder.contains('/')) cachedFilesHere.append(p);
-            }
-        }
-
         // Added files.
         for (const QString &entry : currentFiles) {
             if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(entry)) {
                 continue;
             }
-            const QString full = prefix + entry;
-            if (!fileCache->contains(full)) fileCache->addFile(full);
+            if (!cachedFilesHere.contains(entry)) fileCache->addFile(prefix + entry);
         }
 
         // Removed files.
-        for (const QString &cached : cachedFilesHere) {
-            const QString name = cached.mid(prefix.length());
-            if (!currentFiles.contains(name)) {
-                QFileInfo info(cached);
-                if (!info.exists()) fileCache->removeFile(cached);
+        for (auto it = cachedFilesHere.cbegin(); it != cachedFilesHere.cend(); ++it) {
+            if (currentFiles.contains(it.key())) continue;
+            if (!QFileInfo(prefix + it.key()).exists()) {
+                fileCache->removeFile(prefix + it.key());
             }
         }
     }
@@ -795,10 +708,29 @@ static bool isOpaqueBundle(const QString &basename)
     return false;
 }
 
+// Child names of `dirPath` that fall on the path-level exclude list —
+// resolved once per directory so the per-entry loop stays string-free.
+static QSet<QString> pathLevelExcludedChildren(const QString &dirPath)
+{
+    QSet<QString> names;
+    const QString prefix = dirPath.endsWith(QLatin1Char('/'))
+                               ? dirPath : dirPath + QLatin1Char('/');
+    for (const QString &ex : pathLevelExcludes()) {
+        if (ex.startsWith(prefix)) {
+            const QString rest = ex.mid(prefix.length());
+            if (!rest.isEmpty() && !rest.contains(QLatin1Char('/'))) {
+                names.insert(rest);
+            }
+        }
+    }
+    return names;
+}
+
 void PathCacheManager::scanWorker()
 {
     while (!m_stopRequested.loadAcquire()) {
         QString currentPath;
+        qint32 currentNode = -1;
 
         // Get next directory from queue
         {
@@ -839,7 +771,9 @@ void PathCacheManager::scanWorker()
                 continue;
             }
 
-            currentPath = m_scanQueue.dequeue();
+            const ScanItem item = m_scanQueue.dequeue();
+            currentPath = item.path;
+            currentNode = item.node;
         }
 
         // Check if this path is under an already-completed root (skip if so)
@@ -859,7 +793,15 @@ void PathCacheManager::scanWorker()
 
         // Process this directory
         QDir dir(currentPath);
-        if (!dir.exists() || !dir.isReadable()) {
+        if (currentNode < 0 || !dir.exists() || !dir.isReadable()) {
+            continue;
+        }
+
+        // Path-level system excludes (/System, /private, /dev, …).
+        // Separate from the name-pattern excludes because we want them
+        // unconditionally enforced — these directories are never useful
+        // for personal-file search and add millions of entries.
+        if (isPathLevelExcluded(currentPath)) {
             continue;
         }
 
@@ -868,73 +810,47 @@ void PathCacheManager::scanWorker()
         // search worker / tree view. See docs/todos.md TODO 4.
         QDir::Filters folderFilters = QDir::Dirs | QDir::NoDotAndDotDot
                                       | QDir::Readable | QDir::Hidden;
-        QStringList folderEntries = dir.entryList(folderFilters);
-        QStringList newPaths;
+        const QStringList folderEntries = dir.entryList(folderFilters);
+        const QSet<QString> pathExcluded = pathLevelExcludedChildren(currentPath);
 
+        QStringList newNames;
         for (const QString &entry : folderEntries) {
             if (m_stopRequested.loadAcquire()) {
                 break;
             }
-
-            // Check name-pattern exclusions (user-configurable list).
-            if (m_excludeSettings && m_excludeSettings->shouldExclude(entry)) {
+            // Name-pattern exclusions (user-configurable list) + the
+            // path-level excludes that land exactly at this directory.
+            if ((m_excludeSettings && m_excludeSettings->shouldExclude(entry))
+                || pathExcluded.contains(entry)) {
                 m_foldersExcluded.fetchAndAddRelaxed(1);
                 continue;
             }
+            newNames.append(entry);
+        }
 
-            // Opaque bundles (.app, .photoslibrary, ...) are added to the
-            // folder cache so they remain selectable in the picker, but we
-            // do NOT descend into them — they're treated as a single thing.
-            // Skip the queue-enqueue step for these.
-            const bool isBundle = isOpaqueBundle(entry);
-
-            QString fullPath = currentPath + "/" + entry;
-
-            // Path-level system excludes (/System, /private, /dev, …).
-            // Separate from the name-pattern excludes because we want them
-            // unconditionally enforced — these directories are never useful
-            // for personal-file search and add millions of entries.
-            if (isPathLevelExcluded(fullPath)) {
-                m_foldersExcluded.fetchAndAddRelaxed(1);
-                continue;
-            }
-
-            // Skip if already in cache (already scanned)
-            {
-                QMutexLocker locker(&m_mutex);
-                if (m_pathSet.contains(fullPath)) {
-                    continue;
+        // One atomic batch per directory — no per-entry path strings, no
+        // per-entry dedupe lookups (the store snapshots existing children
+        // once when the directory was listed before).
+        const int hard = m_hardCeiling.loadAcquire();
+        const int soft = m_softCap.loadAcquire();
+        const PathStore::Ingest res = m_store->ingestListing(
+            currentNode, newNames, PathStore::Folder, qMin(soft, hard));
+        if (res.added > 0) {
+            m_foldersIndexed.fetchAndAddRelaxed(res.added);
+        }
+        if (res.capHit) {
+            if (m_store->count(PathStore::Folder) >= hard) {
+                if (!m_ceilingReached.loadAcquire()) {
+                    m_ceilingReached.storeRelease(1);
+                    QMetaObject::invokeMethod(this,
+                        [this]() { emit folderCeilingReachedSignal(); },
+                        Qt::QueuedConnection);
                 }
-            }
-
-            // Bundles go into the folder cache but don't get enqueued for
-            // further scanning. Regular folders are added to both the cache
-            // and the work queue.
-            if (isBundle) {
-                if (m_ceilingReached.loadAcquire()) continue;
-                QMutexLocker locker(&m_mutex);
-                if (!m_pathSet.contains(fullPath)) {
-                    const int hard = m_hardCeiling.loadAcquire();
-                    if (m_paths.size() >= hard) {
-                        m_ceilingReached.storeRelease(1);
-                        continue;
-                    }
-                    if (m_paths.size() >= m_softCap.loadAcquire()) {
-                        if (!m_capReached.loadAcquire()) {
-                            m_capReached.storeRelease(1);
-                            QMetaObject::invokeMethod(this,
-                                [this]() { emit folderCapReachedSignal(); },
-                                Qt::QueuedConnection);
-                        }
-                        continue;
-                    }
-                    m_paths.append(fullPath);
-                    m_lowerPaths.append(fullPath.toLower());
-                    m_pathSet.insert(fullPath);
-                    m_foldersIndexed.fetchAndAddRelaxed(1);
-                }
-            } else {
-                newPaths.append(fullPath);
+            } else if (!m_capReached.loadAcquire()) {
+                m_capReached.storeRelease(1);
+                QMetaObject::invokeMethod(this,
+                    [this]() { emit folderCapReachedSignal(); },
+                    Qt::QueuedConnection);
             }
         }
 
@@ -944,68 +860,31 @@ void PathCacheManager::scanWorker()
         if (!m_stopRequested.loadAcquire()) {
             QDir::Filters fileFilters = QDir::Files | QDir::NoDotAndDotDot
                                         | QDir::Readable | QDir::Hidden;
-            QStringList fileEntries = dir.entryList(fileFilters);
+            const QStringList fileEntries = dir.entryList(fileFilters);
             FileCacheManager *fileCache = FileCacheManager::instance();
             for (const QString &entry : fileEntries) {
                 if (m_stopRequested.loadAcquire()) break;
                 if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(entry)) {
                     continue;
                 }
-                QString fullFilePath = currentPath + "/" + entry;
-                fileCache->addFile(fullFilePath);
+                fileCache->addFile(currentPath + "/" + entry);
             }
         }
 
-        // Add folders to cache and queue
-        if (!newPaths.isEmpty()) {
-            {
-                QMutexLocker locker(&m_mutex);
-                const int hard = m_hardCeiling.loadAcquire();
-                const int soft = m_softCap.loadAcquire();
-                bool emittedCap = false;
-                bool emittedCeiling = false;
-                for (const QString &p : newPaths) {
-                    if (m_paths.size() >= hard) {
-                        if (!m_ceilingReached.loadAcquire()) {
-                            m_ceilingReached.storeRelease(1);
-                            emittedCeiling = true;
-                        }
-                        break;
-                    }
-                    if (m_paths.size() >= soft) {
-                        if (!m_capReached.loadAcquire()) {
-                            m_capReached.storeRelease(1);
-                            emittedCap = true;
-                        }
-                        break;
-                    }
-                    if (!m_pathSet.contains(p)) {
-                        m_paths.append(p);
-                        m_lowerPaths.append(p.toLower());
-                        m_pathSet.insert(p);
-                        m_foldersIndexed.fetchAndAddRelaxed(1);
-                    }
-                }
-                if (emittedCap) {
-                    QMetaObject::invokeMethod(this,
-                        [this]() { emit folderCapReachedSignal(); },
-                        Qt::QueuedConnection);
-                }
-                if (emittedCeiling) {
-                    QMetaObject::invokeMethod(this,
-                        [this]() { emit folderCeilingReachedSignal(); },
-                        Qt::QueuedConnection);
-                }
+        // Enqueue new (or re-livened) folders for descent. Opaque bundles
+        // (.app, .photoslibrary, …) stay cached but are never descended —
+        // the user thinks of them as a single thing. Cap-blocked children
+        // were not cached, so they are not descended either.
+        {
+            QMutexLocker locker(&m_queueMutex);
+            bool queued = false;
+            for (qsizetype i = 0; i < res.nodes.size(); ++i) {
+                const qint32 node = res.nodes.at(i);
+                if (node < 0 || isOpaqueBundle(newNames.at(i))) continue;
+                m_scanQueue.enqueue({currentPath + "/" + newNames.at(i), node});
+                queued = true;
             }
-
-            // Add to queue for further processing
-            {
-                QMutexLocker locker(&m_queueMutex);
-                for (const QString &p : newPaths) {
-                    m_scanQueue.enqueue(p);
-                }
-                m_queueCondition.wakeAll();
-            }
+            if (queued) m_queueCondition.wakeAll();
         }
     }
 }
@@ -1014,11 +893,13 @@ void PathCacheManager::performScan()
 {
     QString homeDir = QDir::homePath();
 
-    // Initialize queue with home directory
+    // Initialize queue with home directory (scaffold node — the home dir
+    // itself is not a cache entry, matching the original behavior).
+    const qint32 homeNode = m_store->ensurePath(homeDir);
     {
         QMutexLocker locker(&m_queueMutex);
         m_scanQueue.clear();
-        m_scanQueue.enqueue(homeDir);
+        m_scanQueue.enqueue({homeDir, homeNode});
     }
 
     // Add home dir to watcher

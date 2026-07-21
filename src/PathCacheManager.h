@@ -13,6 +13,7 @@
 
 class QFileSystemWatcher;
 class ExcludeSettings;
+class PathStore;
 
 // Singleton manager for in-memory folder path cache
 // Scans the user's home directory in a background thread at startup
@@ -84,25 +85,23 @@ private:
     void performScan();
     void scanWorker(); // Parallel worker thread
 
-    // Add a path to cache and watcher
-    void addPathToCache(const QString &path);
-    void removePathFromCache(const QString &path);
+    // Add a folder entry (creating intermediate nodes); returns its node.
+    qint32 addPathToCache(const QString &path);
 
-    // Parallel scan queue
-    QQueue<QString> m_scanQueue;
+    // Parallel scan queue — each pending directory carries its resolved
+    // PathStore node so workers never re-resolve paths.
+    struct ScanItem { QString path; qint32 node; };
+    QQueue<ScanItem> m_scanQueue;
     QMutex m_queueMutex;
     QWaitCondition m_queueCondition;
     QAtomicInt m_activeWorkers{0};
     QAtomicInt m_workersFinished{0};
     int m_numWorkers = 0;
 
-    // Thread-safe path storage
+    // Shared compact path storage (folders = PathStore::Folder). The store
+    // carries its own lock; m_mutex guards the scan bookkeeping below.
+    PathStore *m_store = nullptr;
     mutable QMutex m_mutex;
-    QStringList m_paths;
-    // Parallel array of pre-lowercased paths. Computed once on insert so the
-    // search hot path doesn't pay toLower() per cached path per keystroke.
-    QStringList m_lowerPaths;
-    QSet<QString> m_pathSet; // For O(1) lookup
 
     // Two-tier cap (mirrors FileCacheManager).
     //   softCap     — backstop against unbounded background growth (the
