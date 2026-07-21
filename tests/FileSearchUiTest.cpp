@@ -307,3 +307,26 @@ void FileSearchUiTest::testFavoriteRowsHaveIndicatorExceptHome()
     QCOMPARE(homeLabelOnRowWithoutDot, QString("Home"));
     QVERIFY(rowsWithIndicator >= 1);
 }
+
+void FileSearchUiTest::testCacheStatusLabelShowsFolderAndFileCounts()
+{
+    // The status label must be honest: it shows BOTH the folder count and
+    // the file count (the file cache used to grow invisibly to millions of
+    // entries while the label froze at the folder cap).
+    auto *fc = FileCacheManager::instance();
+    fc->clear();
+    for (int i = 0; i < 3; ++i) {
+        fc->addFile(QDir::homePath() + QString("/blk2-status-%1.txt").arg(i));
+    }
+    QCOMPARE(fc->fileCount(), 3);
+
+    FolderBrowserDialog dialog(QDir::homePath());
+    auto *label = dialog.findChild<QLabel *>("cacheStatusLabel");
+    QVERIFY(label);
+    const QString text = label->text();
+    // Holds for both the "Indexing…" and the "Ready —" variant.
+    QVERIFY2(text.contains(QStringLiteral("folders")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("%1 files")
+                               .arg(QLocale().toString(3))),
+             qPrintable(text));
+}

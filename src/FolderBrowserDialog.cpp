@@ -1236,17 +1236,21 @@ void FolderBrowserDialog::onCacheStatusChanged()
 void FolderBrowserDialog::updateCacheStatusLabel()
 {
     PathCacheManager *cache = PathCacheManager::instance();
-    // Format the count with thousands separators for legibility, then drop
-    // the word "folders" — by this point in the UI the count alone is clear.
+    // Honest status: show BOTH counts. The file cache is much bigger than
+    // the folder cache — hiding it made the label freeze at the folder cap
+    // while memory kept climbing.
     auto fmt = [](int n) {
         return QLocale().toString(n);
     };
+    const QString counts = tr("%1 folders · %2 files")
+                               .arg(fmt(cache->folderCount()),
+                                    fmt(FileCacheManager::instance()->fileCount()));
 
     if (cache->isScanning()) {
-        m_cacheStatusLabel->setText(tr("Indexing… %1").arg(fmt(cache->folderCount())));
+        m_cacheStatusLabel->setText(tr("Indexing… %1").arg(counts));
         m_cacheStatusLabel->setStyleSheet("color: #e67e22; font-size: 11px;");
     } else {
-        m_cacheStatusLabel->setText(tr("Ready — %1").arg(fmt(cache->folderCount())));
+        m_cacheStatusLabel->setText(tr("Ready — %1").arg(counts));
         m_cacheStatusLabel->setStyleSheet("color: #27ae60; font-size: 11px;");
     }
 }
