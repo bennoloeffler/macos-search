@@ -372,6 +372,7 @@ void PathStoreTest::memoryGateG1()
     const int total = s.count(PathStore::Folder) + s.count(PathStore::File);
     QCOMPARE(total, target);
     const double perEntry = double(s.bytesUsed()) / total;
+    qInfo("G1: %.1f bytes/entry (gate: 36, baseline was ~730)", perEntry);
     QVERIFY2(perEntry <= 36.0,
              qPrintable(QString("G1 gate: %1 bytes/entry > 36").arg(perEntry)));
 }
