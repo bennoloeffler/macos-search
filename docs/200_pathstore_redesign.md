@@ -138,3 +138,31 @@ main-thread O(6 M) sweep per fs event).
 
 Merge order: 3 → 2 → 1 (small first; Block 1 rebases and must pass
 G1–G4 through Block 3's harness).
+
+## Outcome (2026-07-21, all merged)
+
+All gates passed. `mem-compare.sh` on ~/projects (511,617 entries,
+Release builds): **752.1 → 18.8 B/entry = 40×** (goal was 20×). Search
+p95 5.6× faster. Follow-up fixes the measurement flushed out:
+
+- **Symlinked directories are never descended** (`cfbb1f9`) — the BFS
+  used to follow them, walking linked trees twice (~/Dropbox →
+  ~/VundS Dropbox, ~/iCloud → CloudStorage, bypassing excludes) and
+  looping forever on ancestor links. A "home scan" measured 18 M+
+  entries before the fix; the real tree is ~2 M.
+- **~/Library and ~/.Trash are path-level excludes** — descending into
+  ~/Library triggered macOS TCC privacy prompts (Reminders, Contacts,
+  other apps' containers).
+- **Default exclude patterns cover package registries / tool caches**
+  (.cargo, .rustup, .m2, .nvm, .pyenv, .android, .cpcache, …) with a
+  `folderDefaultsVersion` migration for existing installs.
+- **Caps raised** (folders 1 M/5 M, files 5 M/10 M) — justified by
+  measurement, see below.
+
+Final uncapped full-home measurement (`--bench-uncapped`, Release):
+**216 k folders + 1.81 M files indexed completely in 88 s, 31.6 MB
+index (14.7 B/entry), search p95 ≈ 30 ms.** The original complaint was
+7 GB and growing forever; the complete index of the same home is now
+32 MB. Known bench caveat: query generation materializes every cached
+path, so the bench process's own peak RSS is meaningless at multi-
+million entry counts — read `memory.after_scan_footprint` instead.
