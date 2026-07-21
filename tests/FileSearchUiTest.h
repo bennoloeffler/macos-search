@@ -30,7 +30,7 @@ private slots:
     void testScanHereButtonDisabledWhenPathDoesNotExist();
     void testInlineIndicatorLivesInsidePathField();
     void testNoStandaloneScanHereButtonAnymore();
-    void testFavoriteRowsHaveIndicatorExceptHome();
+    void testFavoriteRowsHaveIndicator();
 };
 
 #endif // FILESEARCHUITEST_H

@@ -46,9 +46,23 @@ QStringList resolveScanQueue()
     return ordered;
 }
 
-/// Drive the scan queue: scan the first path, and on `scanComplete`, expand
-/// to the next. Implemented as a QObject so we can keep state across
-/// queued-connection invocations without leaking lambdas.
+/// Drive the scan queue uniformly via `expandTo()` and chain on `scanComplete`.
+///
+/// History: an earlier version called `startScan()` first (which walks $HOME)
+/// and started the queue at index 1, assuming HOME was covered. That broke
+/// when `FolderBrowserDialog`'s constructor triggers a `PathSelector::pathChanged`
+/// signal during initial navigateTo() → `setRootPath()` → `expandTo(initialDir)`.
+/// If initialDir ≠ $HOME (e.g. the user set a non-HOME defaultFavorite), a scan
+/// for initialDir is already running by the time the scheduler starts; the
+/// scheduler's `startScan()` then no-ops, HOME is *never* scanned, and `/Users/benno`
+/// never lands in `m_completedRoots` — so the Home favorite (and the Search-in
+/// indicator pointing at HOME) was stuck showing "Scan now" forever.
+///
+/// New behaviour: walk the queue from index 0, calling `expandTo()` on each
+/// path. If the path is already scanned (covered by an earlier completedRoot)
+/// skip it; if `expandTo()` is a no-op (no real scan started, no completion
+/// signal will fire), advance immediately to the next; otherwise yield until
+/// the corresponding `scanComplete` arrives.
 class ScanScheduler : public QObject
 {
     Q_OBJECT
@@ -59,28 +73,26 @@ public:
         connect(cache, &PathCacheManager::scanComplete,
                 this, &ScanScheduler::onScanComplete);
     }
-    void start()
-    {
-        if (m_queue.isEmpty()) return;
-        m_cache->startScan();  // upstream's startScan walks $HOME by default
-        // After upstream startScan finishes, we chain via onScanComplete.
-    }
+    void start() { advance(); }
 private slots:
-    void onScanComplete(int, int)
-    {
-        if (m_index >= m_queue.size()) return;
-        const QString next = m_queue.at(m_index++);
-        if (QDir::cleanPath(next) == QDir::cleanPath(QDir::homePath())) {
-            // Already covered by startScan's $HOME default; skip ahead.
-            onScanComplete(0, 0);
-            return;
-        }
-        m_cache->expandTo(next);
-    }
+    void onScanComplete(int, int) { advance(); }
 private:
+    void advance()
+    {
+        while (m_index < m_queue.size()) {
+            const QString next = m_queue.at(m_index++);
+            if (m_cache->isPathScanned(next)) continue;  // covered, skip
+            m_cache->expandTo(next);
+            // If a scan is now in flight, yield and wait for scanComplete.
+            // Otherwise expandTo was a no-op (path already known but not in
+            // a completedRoot) — keep walking the queue.
+            if (m_cache->isScanning()) return;
+        }
+    }
+
     PathCacheManager *m_cache;
     QStringList m_queue;
-    int m_index = 1;  // index 0 is $HOME (covered by startScan); start at 1
+    int m_index = 0;
 };
 
 }  // namespace

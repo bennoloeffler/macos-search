@@ -1660,8 +1660,12 @@ void FolderBrowserDialog::rebuildFavoritesList()
         item->setToolTip(path);
 
         // Custom row widget: [label, stretch, mini scan-state indicator].
-        // Home gets no indicator — it's effectively always covered by the
-        // startup $HOME scan, so a permanent green dot would be visual noise.
+        // Every row — Home included — gets a dot so the user has a uniform
+        // signal that the path is in the index. The Home dot used to be
+        // suppressed on the assumption that $HOME is always pre-scanned,
+        // but the startup chain can leave HOME out of completedRoots in
+        // edge cases (defaultFavorite ≠ HOME), in which case the missing
+        // dot becomes a silent "is this scanned?" question for the user.
         auto *row = new QWidget(m_favoritesList);
         row->setAttribute(Qt::WA_TranslucentBackground);
         auto *rowLay = new QHBoxLayout(row);
@@ -1683,20 +1687,18 @@ void FolderBrowserDialog::rebuildFavoritesList()
         labelW->setStyleSheet("background: transparent;");
         rowLay->addWidget(labelW, 1);
 
-        if (!isHome) {
-            auto *dot = new ScanStateIndicator(row);
-            dot->setObjectName("favIndicator");
-            dot->setCompact(true);
-            dot->setRepresentedPath(path);
-            // Initial state derived once; refreshScanStateIndicators() keeps
-            // it in sync on every signal.
-            auto *cache = PathCacheManager::instance();
-            if (cache->isPathScanning(path))      dot->setState(ScanStateIndicator::State::Scanning);
-            else if (cache->isPathScanned(path))  dot->setState(ScanStateIndicator::State::Scanned);
-            connect(dot, &ScanStateIndicator::scanRequested,
-                    this, &FolderBrowserDialog::onScanRequested);
-            rowLay->addWidget(dot);
-        }
+        auto *dot = new ScanStateIndicator(row);
+        dot->setObjectName("favIndicator");
+        dot->setCompact(true);
+        dot->setRepresentedPath(path);
+        // Initial state derived once; refreshScanStateIndicators() keeps
+        // it in sync on every signal.
+        auto *cache = PathCacheManager::instance();
+        if (cache->isPathScanning(path))      dot->setState(ScanStateIndicator::State::Scanning);
+        else if (cache->isPathScanned(path))  dot->setState(ScanStateIndicator::State::Scanned);
+        connect(dot, &ScanStateIndicator::scanRequested,
+                this, &FolderBrowserDialog::onScanRequested);
+        rowLay->addWidget(dot);
 
         item->setSizeHint(QSize(0, 30));
         m_favoritesList->setItemWidget(item, row);

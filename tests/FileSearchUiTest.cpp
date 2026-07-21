@@ -281,29 +281,20 @@ void FileSearchUiTest::testNoStandaloneScanHereButtonAnymore()
     QVERIFY(old == nullptr);
 }
 
-void FileSearchUiTest::testFavoriteRowsHaveIndicatorExceptHome()
+void FileSearchUiTest::testFavoriteRowsHaveIndicator()
 {
+    // Every favorite row — Home included — must own a ScanStateIndicator.
+    // The earlier contract suppressed it on Home; that hid the
+    // "is /Users/benno actually scanned?" question whenever the startup
+    // chain finished without HOME landing in completedRoots.
     FolderBrowserDialog dialog(QDir::homePath());
     auto *list = dialog.findChild<QListWidget *>("favoritesList");
     QVERIFY(list);
-    int rowsWithIndicator = 0;
-    int rowsWithoutIndicator = 0;
-    QString homeLabelOnRowWithoutDot;
+    QVERIFY(list->count() >= 1);
     for (int i = 0; i < list->count(); ++i) {
         QWidget *row = list->itemWidget(list->item(i));
         QVERIFY(row);
         auto *dot = row->findChild<ScanStateIndicator *>("favIndicator");
-        if (dot) {
-            ++rowsWithIndicator;
-        } else {
-            ++rowsWithoutIndicator;
-            if (auto *lbl = row->findChild<QLabel *>("favLabel")) {
-                homeLabelOnRowWithoutDot = lbl->text();
-            }
-        }
+        QVERIFY2(dot, qPrintable(QStringLiteral("row %1 missing favIndicator").arg(i)));
     }
-    // Exactly one row (Home) has no indicator.
-    QCOMPARE(rowsWithoutIndicator, 1);
-    QCOMPARE(homeLabelOnRowWithoutDot, QString("Home"));
-    QVERIFY(rowsWithIndicator >= 1);
 }
