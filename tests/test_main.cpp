@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ExcludeSettingsTest.h"
+#include "PathStoreTest.h"
 #include "PathCacheManagerTest.h"
 #include "SearchFieldTest.h"
 #include "PathSelectorStateTest.h"
@@ -92,6 +93,7 @@ int main(int argc, char *argv[])
     RUN_TEST(ContentSearchE2ETest, t19);
     RUN_TEST(SearchResultDelegateTest, t20);
     RUN_TEST(ScanStateIndicatorTest, t21);
+    RUN_TEST(PathStoreTest, t22);
 
     return status;
 }

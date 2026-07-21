@@ -4,9 +4,9 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
-#include <QSet>
-#include <QReadWriteLock>
 #include <QAtomicInt>
+
+class PathStore;
 
 // In-memory file-name cache. Populated by the same BFS walk that drives
 // PathCacheManager (one scan visit per directory, two destinations).
@@ -36,7 +36,12 @@
 //                                     (docs/200_pathstore_redesign.md)
 //                                     brings that far down again.
 //
-// Threading: same QReadWriteLock pattern as ExcludeSettings.
+// STORAGE
+// -------
+// File entries live in the PathStore shared with PathCacheManager
+// (Kind::File) — ~30 bytes per entry instead of three full path copies.
+// clear() only tombstones file entries; the folder cache is untouched.
+// Threading: the store carries its own QReadWriteLock.
 class FileCacheManager : public QObject
 {
     Q_OBJECT
@@ -58,6 +63,12 @@ public:
     // by PathCacheManager::expandToUser before a user-initiated scan starts.
     // Returns the new soft-cap value.
     int bumpSoftCap();
+
+    // Scan hot path: ingest one directory's file listing in one atomic
+    // batch (dirNode = the directory's PathStore node). Applies the $HOME
+    // scope guard once per directory and the caps per file.
+    void ingestScan(qint32 dirNode, const QString &dirPath,
+                    const QStringList &names);
 
     void removeFile(const QString &absolutePath);
     int removeFilesUnder(const QString &directoryPath);
@@ -106,10 +117,9 @@ private:
     FileCacheManager(const FileCacheManager &) = delete;
     FileCacheManager &operator=(const FileCacheManager &) = delete;
 
-    mutable QReadWriteLock m_lock;
-    QStringList m_paths;
-    QStringList m_lowerPaths;
-    QSet<QString> m_pathSet;
+    void noteCapHit();
+
+    PathStore *m_store = nullptr;
     QAtomicInt m_capReached{0};
     QAtomicInt m_ceilingReached{0};
     QAtomicInt m_softCap{kDefaultSoftCap};

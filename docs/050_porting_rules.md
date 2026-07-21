@@ -49,10 +49,36 @@ mostly in `FolderBrowserDialog` and `main.cpp`.
 | `src/FolderBrowserDialog.cpp` | Two open buttons (`Open in Finder` + `Open with App`) instead of one `Choose`. Dialog stays open after open; never closes via Esc. Favorites sidebar replaces the modal-picker framing. Tree's `keyboardSearch` suppressed via event filter so printable keys route to the search field. Extra chords (⌘F, ⌘L, ⌘H, ⌘↑). Persistent shortcut hint line. |
 | `src/SearchField.cpp` | Added `setFocusProxy(m_lineEdit)` so `searchField->setFocus()` actually reaches the editable widget. Bug fix. |
 | `src/ExcludeSettings.{h,cpp}` | Added `QReadWriteLock` guarding `m_patterns` + `m_enabledPatterns`. Required for thread-safe access from `PathCacheManager` workers. See `docs/120_qt_threading.md`. |
-| `src/PathCacheManager.cpp` | Path-level system excludes (`/System`, `/private`, `/dev`, `/Volumes`, …) so `/` can be scanned without bloating the cache with system files. `setShowHidden` is now a no-op — the cache always indexes hidden folders; the eye toggle is presentational only. See `docs/todos.md` TODO 4. |
+| `src/PathStore.{h,cpp}` | **New (2026-07-21).** Compact tree-arena path storage shared by `PathCacheManager` + `FileCacheManager` — 12-byte nodes over one UTF-8 name arena, ~32 B per entry vs. ~730 B for upstream's triple-container layout (measured: G1 test in `PathStoreTest`). Search is two linear passes (per-segment term scan with ASCII fast path, then forward parent-mask propagation). Deletions tombstone nodes; name bytes are reclaimed only by full rescan. Design: `docs/200_pathstore_redesign.md`. |
+| `src/PathCacheManager.cpp` | Path-level system excludes (`/System`, `/private`, `/dev`, `/Volumes`, …) so `/` can be scanned without bloating the cache with system files. `setShowHidden` is now a no-op — the cache always indexes hidden folders; the eye toggle is presentational only. See `docs/todos.md` TODO 4. Storage internals replaced by `PathStore` (2026-07-21): the scan queue carries store nodes, each directory listing is ingested in one atomic batch, and the FSEvents watcher diffs via `childrenOf()` instead of full-cache sweeps. |
+| `src/FileCacheManager.{h,cpp}` | Storage internals replaced by the shared `PathStore` (2026-07-21). Public API, `$HOME` scope guard, two-tier caps and signals unchanged; `clear()` tombstones only file entries. |
 | `src/FolderSearchWorker.{h,cpp}` | Added `setIncludeHidden(bool)` + static `pathIsHidden(path)`. Filters cache results that contain hidden path segments. |
 | `assets/icons.qrc` | Minimal subset of upstream's icon resource set. |
 | `assets/macos-search.icns` | New app icon. |
+
+## Deliberate search-semantics change (PathStore, 2026-07-21)
+
+Upstream matched every query term against the **whole lowercased
+absolute path string**. PathStore matches every term against
+**individual path segments** (ancestor folder names count, so
+`projects readme` still finds `/a/projects/x/README.md`). Two visible
+deltas:
+
+- **`/` in a query is now a term separator.** `projects/readme` behaves
+  exactly like `projects readme`. Upstream required the characters
+  around a `/` to be literally adjacent (`o/pro` only matched
+  `…o/pro…`); now each side just has to appear in *some* segment — a
+  strictly more forgiving match for the way people type paths.
+- **A single term never crosses a `/` boundary** — true upstream too
+  (the `/` character intervened), now guaranteed structurally.
+
+Two scan-behavior deltas, both strictly less wasted work:
+
+- Cap-blocked children are no longer descended into (upstream kept
+  BFS-walking the whole disk while adding nothing).
+- Expanding directly *into* a path-level-excluded root (e.g.
+  `/System/x`) stops at the root instead of listing-and-discarding
+  every child.
 
 ## License headers
 
