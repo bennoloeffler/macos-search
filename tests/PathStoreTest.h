@@ -41,6 +41,14 @@ private slots:
 
     void clearResetsStore();
 
+    // Generation mark-and-sweep (docs/210_persistent_index.md). The
+    // parent-was-listed rule is the load-bearing design decision — see the
+    // skipped-subtree hazard test.
+    void sweepTombstonesUnseenChildrenOfListedDirs();
+    void sweepSparesChildrenOfUnlistedParents();
+    void sweepLeavesStampedViaParentListingSurvive();
+    void generationWrapKeepsSweepSafe();
+
     // Snapshot save/load (docs/210_persistent_index.md)
     void saveLoadRoundtripPreservesStore();
     void saveDropsTombstonedNodes();

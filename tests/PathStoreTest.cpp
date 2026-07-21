@@ -283,11 +283,12 @@ void PathStoreTest::ingestListingDedupesRelisting()
     QVERIFY(r1.nodes.at(0) >= 0 && r1.nodes.at(1) >= 0);
     const qint32 one = s.find("/dir/one");
 
-    // Re-listing: existing live entries are skipped, new ones added.
+    // Re-listing: existing live entries are not re-added but their node
+    // index is returned (the reconcile walk descends into cached trees).
     const auto r2 = s.ingestListing(d, {"one", "two", "three"}, PathStore::Folder, -1);
     QCOMPARE(r2.added, 1);
-    QCOMPARE(r2.nodes.at(0), -1);
-    QCOMPARE(r2.nodes.at(1), -1);
+    QCOMPARE(r2.nodes.at(0), one);
+    QCOMPARE(r2.nodes.at(1), s.find("/dir/two"));
     QVERIFY(r2.nodes.at(2) >= 0);
     QCOMPARE(s.count(PathStore::Folder), 4);  // /dir + three children
 
@@ -333,6 +334,97 @@ void PathStoreTest::clearResetsStore()
     QCOMPARE(s.find("/"), 0);                 // root survives
     // Store is usable again after clear.
     QVERIFY(s.addChild(0, "fresh", PathStore::Folder) > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Generation mark-and-sweep (docs/210_persistent_index.md)
+// ---------------------------------------------------------------------------
+
+void PathStoreTest::sweepTombstonesUnseenChildrenOfListedDirs()
+{
+    PathStore s;
+    const qint32 home = s.findOrCreatePath("/home", PathStore::Folder);
+    s.beginScanGeneration();
+    s.ingestListing(home, {"a", "b"}, PathStore::Folder, -1);
+    const qint32 a = s.find("/home/a");
+    const qint32 b = s.find("/home/b");
+    s.ingestListing(b, {"deep"}, PathStore::Folder, -1);
+    s.ingestListing(b, {"x.txt"}, PathStore::File, -1);
+    QCOMPARE(s.count(PathStore::Folder), 4);   // home, a, b, deep
+
+    // "b" disappears from disk; the next scan re-lists /home without it.
+    s.beginScanGeneration();
+    s.ingestListing(home, {"a"}, PathStore::Folder, -1);
+    const int removed = s.sweepStale(home);
+
+    QCOMPARE(removed, 3);                      // b + its subtree (deep, x.txt)
+    QVERIFY(!s.isEntry(b));
+    QVERIFY(!s.isEntry(s.find("/home/b/deep")));
+    QVERIFY(s.isEntry(a, PathStore::Folder));  // seen this generation
+    QVERIFY(s.isEntry(home));                  // the root itself is never swept
+    QCOMPARE(s.count(PathStore::Folder), 2);
+    QCOMPARE(s.count(PathStore::File), 0);
+}
+
+void PathStoreTest::sweepSparesChildrenOfUnlistedParents()
+{
+    // THE skipped-subtree hazard (docs/210 review): a home scan skips
+    // subtrees already covered by an earlier root (e.g. Desktop). A naive
+    // "sweep everything not seen this generation" would tombstone all of
+    // Desktop. The parent-was-listed rule must leave it untouched.
+    PathStore s;
+    const qint32 home = s.findOrCreatePath("/home", PathStore::Folder);
+
+    // Earlier scan: Desktop was its own root, fully listed.
+    s.beginScanGeneration();
+    const qint32 desktop = s.findOrCreatePath("/home/Desktop", PathStore::Folder);
+    s.ingestListing(desktop, {"keep-me", "me-too"}, PathStore::Folder, -1);
+
+    // Later scan: /home is listed (Desktop is SEEN as a child), but the
+    // Desktop subtree itself is skipped — never listed this generation.
+    s.beginScanGeneration();
+    s.ingestListing(home, {"Desktop"}, PathStore::Folder, -1);
+    const int removed = s.sweepStale(home);
+
+    QCOMPARE(removed, 0);
+    QVERIFY(s.isEntry(s.find("/home/Desktop/keep-me"), PathStore::Folder));
+    QVERIFY(s.isEntry(s.find("/home/Desktop/me-too"), PathStore::Folder));
+}
+
+void PathStoreTest::sweepLeavesStampedViaParentListingSurvive()
+{
+    // Bundles and symlinked dirs appear in their parent's listing (stamped
+    // like any child) but are never listed themselves — so neither they nor
+    // anything cached beneath them is ever swept.
+    PathStore s;
+    const qint32 dir = s.findOrCreatePath("/dir", PathStore::Folder);
+    s.beginScanGeneration();
+    s.ingestListing(dir, {"App.app", "link"}, PathStore::Folder, -1);
+    const qint32 link = s.find("/dir/link");
+    s.ingestListing(link, {"inner"}, PathStore::Folder, -1);  // e.g. via watcher
+
+    s.beginScanGeneration();
+    s.ingestListing(dir, {"App.app", "link"}, PathStore::Folder, -1);
+    QCOMPARE(s.sweepStale(dir), 0);
+    QVERIFY(s.isEntry(s.find("/dir/App.app"), PathStore::Folder));
+    QVERIFY(s.isEntry(s.find("/dir/link/inner"), PathStore::Folder));
+}
+
+void PathStoreTest::generationWrapKeepsSweepSafe()
+{
+    PathStore s;
+    const qint32 dir = s.findOrCreatePath("/dir", PathStore::Folder);
+    s.beginScanGeneration();
+    s.ingestListing(dir, {"stays", "goes"}, PathStore::Folder, -1);
+
+    // Exhaust the 15-bit space to force a wrap; all node generations must
+    // normalize so no stale value can ever alias the fresh generation.
+    for (int i = 0; i < 0x8000; ++i) s.beginScanGeneration();
+
+    s.ingestListing(dir, {"stays"}, PathStore::Folder, -1);
+    QCOMPARE(s.sweepStale(dir), 1);
+    QVERIFY(s.isEntry(s.find("/dir/stays"), PathStore::Folder));
+    QVERIFY(!s.isEntry(s.find("/dir/goes")));
 }
 
 // ---------------------------------------------------------------------------
