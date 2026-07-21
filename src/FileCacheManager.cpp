@@ -1,12 +1,14 @@
 #include "FileCacheManager.h"
+#include "PathStore.h"
 
 #include <QDir>
-#include <QReadLocker>
-#include <QWriteLocker>
 
 FileCacheManager *FileCacheManager::s_instance = nullptr;
 
 namespace { QString g_homeOverride; }
+
+// File entries share a kind bitmask helper with removeFilesUnder/clear.
+static constexpr quint8 kFileOnly = 1u << PathStore::File;
 
 void FileCacheManager::setHomeOverrideForTests(const QString &path)
 {
@@ -24,6 +26,7 @@ FileCacheManager *FileCacheManager::instance()
 FileCacheManager::FileCacheManager(QObject *parent)
     : QObject(parent)
 {
+    m_store = PathStore::shared();
 }
 
 bool FileCacheManager::isUnderHome(const QString &absolutePath)
@@ -42,6 +45,21 @@ bool FileCacheManager::isUnderHome(const QString &absolutePath)
     return clean.startsWith(home + QLatin1Char('/'));
 }
 
+// Shared cap-hit bookkeeping: latch the right flag, emit the right signal
+// (outside the store lock — the store locks internally).
+void FileCacheManager::noteCapHit()
+{
+    if (m_store->count(PathStore::File) >= m_hardCeiling.loadAcquire()) {
+        if (!m_ceilingReached.loadAcquire()) {
+            m_ceilingReached.storeRelease(1);
+            emit ceilingReachedSignal();
+        }
+    } else if (!m_capReached.loadAcquire()) {
+        m_capReached.storeRelease(1);
+        emit capReachedSignal();
+    }
+}
+
 bool FileCacheManager::addFile(const QString &absolutePath)
 {
     if (absolutePath.isEmpty()) return false;
@@ -52,32 +70,27 @@ bool FileCacheManager::addFile(const QString &absolutePath)
 
     if (m_ceilingReached.loadAcquire()) return false;
 
-    QWriteLocker locker(&m_lock);
-
-    if (m_pathSet.contains(absolutePath)) return false;
-
-    const int currentSize = static_cast<int>(m_paths.size());
-    const int hard = m_hardCeiling.loadAcquire();
-    if (currentSize >= hard) {
-        m_ceilingReached.storeRelease(1);
-        locker.unlock();
-        emit ceilingReachedSignal();
+    const int cap = qMin(m_softCap.loadAcquire(), m_hardCeiling.loadAcquire());
+    PathStore::Add status = PathStore::Add::Existed;
+    m_store->findOrCreatePath(absolutePath, PathStore::File, cap, &status);
+    if (status == PathStore::Add::CapBlocked) {
+        noteCapHit();
         return false;
     }
-    const int soft = m_softCap.loadAcquire();
-    if (currentSize >= soft) {
-        if (!m_capReached.loadAcquire()) {
-            m_capReached.storeRelease(1);
-            locker.unlock();
-            emit capReachedSignal();
-        }
-        return false;
-    }
+    return status == PathStore::Add::Added;
+}
 
-    m_paths.append(absolutePath);
-    m_lowerPaths.append(absolutePath.toLower());
-    m_pathSet.insert(absolutePath);
-    return true;
+void FileCacheManager::ingestScan(qint32 dirNode, const QString &dirPath,
+                                  const QStringList &names)
+{
+    if (dirNode < 0 || names.isEmpty()) return;
+    if (!isUnderHome(dirPath)) return;
+    if (m_ceilingReached.loadAcquire()) return;
+
+    const int cap = qMin(m_softCap.loadAcquire(), m_hardCeiling.loadAcquire());
+    const PathStore::Ingest res =
+        m_store->ingestListing(dirNode, names, PathStore::File, cap);
+    if (res.capHit) noteCapHit();
 }
 
 int FileCacheManager::bumpSoftCap()
@@ -95,52 +108,31 @@ int FileCacheManager::bumpSoftCap()
 
 void FileCacheManager::removeFile(const QString &absolutePath)
 {
-    QWriteLocker locker(&m_lock);
-    if (m_pathSet.contains(absolutePath)) {
-        const int idx = m_paths.indexOf(absolutePath);
-        if (idx >= 0) {
-            m_paths.removeAt(idx);
-            m_lowerPaths.removeAt(idx);
-        }
-        m_pathSet.remove(absolutePath);
+    const qint32 node = m_store->find(absolutePath);
+    if (m_store->isEntry(node, PathStore::File)) {
+        m_store->markDeleted(node);
     }
 }
 
 int FileCacheManager::removeFilesUnder(const QString &directoryPath)
 {
     if (directoryPath.isEmpty()) return 0;
-    const QString prefix = directoryPath.endsWith('/') ? directoryPath
-                                                       : directoryPath + "/";
-
-    QWriteLocker locker(&m_lock);
-    int removed = 0;
-    for (int i = m_paths.size() - 1; i >= 0; --i) {
-        if (m_paths.at(i).startsWith(prefix)) {
-            m_pathSet.remove(m_paths.at(i));
-            m_paths.removeAt(i);
-            m_lowerPaths.removeAt(i);
-            ++removed;
-        }
-    }
-    return removed;
+    const qint32 node = m_store->find(QDir::cleanPath(directoryPath));
+    if (node < 0) return 0;
+    return m_store->markDeletedRecursive(node, kFileOnly);
 }
 
 void FileCacheManager::clear()
 {
-    {
-        QWriteLocker locker(&m_lock);
-        m_paths.clear();
-        m_lowerPaths.clear();
-        m_pathSet.clear();
-    }
+    // Tombstone every file entry; folder entries in the shared store stay.
+    m_store->markDeletedRecursive(m_store->find(QStringLiteral("/")), kFileOnly);
     m_capReached.storeRelease(0);
     m_ceilingReached.storeRelease(0);
 }
 
 int FileCacheManager::fileCount() const
 {
-    QReadLocker locker(&m_lock);
-    return static_cast<int>(m_paths.size());
+    return m_store->count(PathStore::File);
 }
 
 int FileCacheManager::softCap() const
@@ -169,12 +161,7 @@ void FileCacheManager::setSoftCap(int newCap)
     const int hard = m_hardCeiling.loadAcquire();
     if (newCap > hard) newCap = hard;
     m_softCap.storeRelease(newCap);
-    QReadLocker locker(&m_lock);
-    if (m_paths.size() >= newCap) {
-        m_capReached.storeRelease(1);
-    } else {
-        m_capReached.storeRelease(0);
-    }
+    m_capReached.storeRelease(fileCount() >= newCap ? 1 : 0);
 }
 
 void FileCacheManager::setHardCeiling(int newCeiling)
@@ -184,56 +171,22 @@ void FileCacheManager::setHardCeiling(int newCeiling)
     if (m_softCap.loadAcquire() > newCeiling) {
         m_softCap.storeRelease(newCeiling);
     }
-    QReadLocker locker(&m_lock);
-    if (m_paths.size() >= newCeiling) {
-        m_ceilingReached.storeRelease(1);
-    } else {
-        m_ceilingReached.storeRelease(0);
-    }
+    m_ceilingReached.storeRelease(fileCount() >= newCeiling ? 1 : 0);
 }
 
 bool FileCacheManager::contains(const QString &absolutePath) const
 {
-    QReadLocker locker(&m_lock);
-    return m_pathSet.contains(absolutePath);
+    return m_store->isEntry(m_store->find(absolutePath), PathStore::File);
 }
 
 QStringList FileCacheManager::cachedFiles() const
 {
-    QReadLocker locker(&m_lock);
-    return m_paths;
+    return m_store->entries(PathStore::File);
 }
 
 QStringList FileCacheManager::search(const QString &query,
                                      const QString &rootPath,
                                      int maxResults) const
 {
-    if (query.isEmpty()) return {};
-
-    QStringList terms = query.toLower().split(' ', Qt::SkipEmptyParts);
-    if (terms.isEmpty()) return {};
-
-    QStringList results;
-    QReadLocker locker(&m_lock);
-    const int n = static_cast<int>(m_paths.size());
-    const QString rootPrefix = rootPath.isEmpty() ? QString() : rootPath + "/";
-
-    for (int i = 0; i < n; ++i) {
-        const QString &lowerPath = m_lowerPaths.at(i);
-        if (!rootPath.isEmpty()) {
-            const QString &path = m_paths.at(i);
-            if (!path.startsWith(rootPrefix) && path != rootPath) continue;
-        }
-        bool allMatch = true;
-        for (const QString &term : terms) {
-            if (!lowerPath.contains(term)) {
-                allMatch = false;
-                break;
-            }
-        }
-        if (!allMatch) continue;
-        results.append(m_paths.at(i));
-        if (results.size() >= maxResults) break;
-    }
-    return results;
+    return m_store->search(query, PathStore::File, rootPath, maxResults);
 }

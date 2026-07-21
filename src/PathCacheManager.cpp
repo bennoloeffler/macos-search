@@ -861,14 +861,16 @@ void PathCacheManager::scanWorker()
             QDir::Filters fileFilters = QDir::Files | QDir::NoDotAndDotDot
                                         | QDir::Readable | QDir::Hidden;
             const QStringList fileEntries = dir.entryList(fileFilters);
-            FileCacheManager *fileCache = FileCacheManager::instance();
+            QStringList fileNames;
             for (const QString &entry : fileEntries) {
                 if (m_stopRequested.loadAcquire()) break;
                 if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(entry)) {
                     continue;
                 }
-                fileCache->addFile(currentPath + "/" + entry);
+                fileNames.append(entry);
             }
+            FileCacheManager::instance()->ingestScan(currentNode, currentPath,
+                                                     fileNames);
         }
 
         // Enqueue new (or re-livened) folders for descent. Opaque bundles
