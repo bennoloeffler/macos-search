@@ -6,6 +6,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -33,9 +34,12 @@ void waitForScanComplete(PathCacheManager *cache, int ms = 5000)
 
 }  // namespace
 
+namespace { ExcludeSettings *g_excludeSettings = nullptr; }
+
 void CacheStrategyTest::initTestCase()
 {
     static ExcludeSettings settings;
+    g_excludeSettings = &settings;
     PathCacheManager::instance()->setExcludeSettings(&settings);
 }
 
@@ -256,6 +260,80 @@ void CacheStrategyTest::folderHardCeilingBlocksAdditions()
 
     cache->setHardCeiling(PathCacheManager::kDefaultHardCeiling);
     cache->setSoftCap(PathCacheManager::kDefaultSoftCap);
+}
+
+void CacheStrategyTest::cappedScanStopsDescendingAndCompletes()
+{
+    // Linear chain tdir/l0/l1/…/l7. Every level (root included) contains an
+    // excluded "node_modules" folder and two files. With both caps set to 1,
+    // the caps are hit while processing the root — the BFS must then stop
+    // enqueueing subdirectories, so the deeper node_modules folders are
+    // never even enumerated (foldersExcluded stays at 1 instead of 9).
+    const int kDepth = 8;
+    QTemporaryDir tdir;
+    QVERIFY(tdir.isValid());
+    auto seed = [](const QString &dir) {
+        QDir(dir).mkdir(QStringLiteral("node_modules"));
+        for (const char *name : {"f1.txt", "f2.txt"}) {
+            QFile f(dir + '/' + name);
+            f.open(QIODevice::WriteOnly);
+            f.write("x");
+        }
+    };
+    QString cur = tdir.path();
+    seed(cur);
+    for (int i = 0; i < kDepth; ++i) {
+        cur += QString("/l%1").arg(i);
+        QVERIFY(QDir().mkpath(cur));
+        seed(cur);
+    }
+
+    QVERIFY(g_excludeSettings);
+    g_excludeSettings->setPatternEnabled(QStringLiteral("node_modules"), true);
+
+    auto *cache = PathCacheManager::instance();
+    auto *fc = FileCacheManager::instance();
+    cache->stopScan();
+    cache->rescan();
+    cache->stopScan();
+    QTest::qWait(30);
+    fc->clear();
+    FileCacheManager::setHomeOverrideForTests(tdir.path());
+    fc->setSoftCap(1);
+    cache->setSoftCap(1);
+
+    // Restore global state even if an assertion below aborts the test.
+    auto restore = qScopeGuard([cache, fc]() {
+        FileCacheManager::setHomeOverrideForTests(QString());
+        fc->clear();
+        fc->setSoftCap(FileCacheManager::kDefaultSoftCap);
+        fc->setHardCeiling(FileCacheManager::kDefaultHardCeiling);
+        cache->setSoftCap(PathCacheManager::kDefaultSoftCap);
+        cache->setHardCeiling(PathCacheManager::kDefaultHardCeiling);
+    });
+
+    QSignalSpy completeSpy(cache, &PathCacheManager::scanComplete);
+    cache->expandTo(tdir.path());
+    // The scan must drain and complete ON ITS OWN — no stopScan().
+    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 5000;
+    while (cache->isScanning()
+           && QDateTime::currentMSecsSinceEpoch() < deadline) {
+        QTest::qWait(20);
+    }
+    QVERIFY2(!cache->isScanning(), "capped scan should drain and complete");
+    QTRY_COMPARE(completeSpy.count(), 1);
+
+    // Both caches pinned at their caps.
+    QCOMPARE(cache->folderCount(), 1);
+    QCOMPARE(fc->fileCount(), 1);
+
+    // Descent stopped: only the root directory was enumerated, so only the
+    // root's node_modules counted as excluded — not one per level.
+    const int totalExcluded = completeSpy.first().at(1).toInt();
+    QVERIFY2(totalExcluded < kDepth,
+             qPrintable(QString("foldersExcluded=%1 — BFS kept walking the "
+                                "tree after both caps were reached")
+                            .arg(totalExcluded)));
 }
 
 void CacheStrategyTest::folderSoftCapEmitsSignalOnce()

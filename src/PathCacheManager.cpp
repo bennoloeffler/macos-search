@@ -998,8 +998,15 @@ void PathCacheManager::scanWorker()
                 }
             }
 
-            // Add to queue for further processing
-            {
+            // Add to queue for further processing — unless BOTH caches are
+            // capped. Once neither folders nor files can be added, descending
+            // further is pure disk churn: stop enqueueing so the queue drains
+            // and the scan completes instead of walking the whole disk.
+            FileCacheManager *fc = FileCacheManager::instance();
+            const bool foldersCapped = m_capReached.loadAcquire()
+                                       || m_ceilingReached.loadAcquire();
+            const bool filesCapped = fc->capReached() || fc->ceilingReached();
+            if (!(foldersCapped && filesCapped)) {
                 QMutexLocker locker(&m_queueMutex);
                 for (const QString &p : newPaths) {
                     m_scanQueue.enqueue(p);
