@@ -780,14 +780,20 @@ void PathCacheManager::scanWorker()
         // search worker / tree view. See docs/todos.md TODO 4.
         QDir::Filters folderFilters = QDir::Dirs | QDir::NoDotAndDotDot
                                       | QDir::Readable | QDir::Hidden;
-        const QStringList folderEntries = dir.entryList(folderFilters);
+        const QFileInfoList folderEntries = dir.entryInfoList(folderFilters);
         const QSet<QString> pathExcluded = pathLevelExcludedChildren(currentPath);
 
         QStringList newNames;
-        for (const QString &entry : folderEntries) {
+        // Symlinked directories are cached (selectable in the picker) but
+        // NEVER descended: following them walks linked trees twice
+        // (~/Dropbox → ~/VundS Dropbox) and loops forever on a link that
+        // points at an ancestor.
+        QSet<QString> symlinkNames;
+        for (const QFileInfo &info : folderEntries) {
             if (m_stopRequested.loadAcquire()) {
                 break;
             }
+            const QString entry = info.fileName();
             // Name-pattern exclusions (user-configurable list) + the
             // path-level excludes that land exactly at this directory.
             if ((m_excludeSettings && m_excludeSettings->shouldExclude(entry))
@@ -795,6 +801,7 @@ void PathCacheManager::scanWorker()
                 m_foldersExcluded.fetchAndAddRelaxed(1);
                 continue;
             }
+            if (info.isSymLink()) symlinkNames.insert(entry);
             newNames.append(entry);
         }
 
@@ -844,15 +851,18 @@ void PathCacheManager::scanWorker()
         }
 
         // Enqueue new (or re-livened) folders for descent. Opaque bundles
-        // (.app, .photoslibrary, …) stay cached but are never descended —
-        // the user thinks of them as a single thing. Cap-blocked children
-        // were not cached, so they are not descended either.
+        // (.app, .photoslibrary, …) and symlinked directories stay cached
+        // but are never descended — bundles read as a single thing, and
+        // symlinks alias trees that are (or will be) walked at their real
+        // location. Cap-blocked children were not cached, so they are not
+        // descended either.
         {
             QMutexLocker locker(&m_queueMutex);
             bool queued = false;
             for (qsizetype i = 0; i < res.nodes.size(); ++i) {
                 const qint32 node = res.nodes.at(i);
-                if (node < 0 || isOpaqueBundle(newNames.at(i))) continue;
+                if (node < 0 || isOpaqueBundle(newNames.at(i))
+                    || symlinkNames.contains(newNames.at(i))) continue;
                 m_scanQueue.enqueue({currentPath + "/" + newNames.at(i), node});
                 queued = true;
             }

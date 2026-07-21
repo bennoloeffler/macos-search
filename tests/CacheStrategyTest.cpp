@@ -246,6 +246,55 @@ void CacheStrategyTest::homeLibraryIsNotInCacheAfterScan()
              qPrintable(lib + " leaked into the cache"));
 }
 
+void CacheStrategyTest::symlinkedDirIsCachedButNotDescended()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString root = tmp.path();
+    QVERIFY(QDir().mkpath(root + "/real/inner"));
+    QVERIFY(QFile::link(root + "/real", root + "/link"));
+
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(root);
+    waitForScanComplete(cache);
+
+    const QStringList all = cache->cachedPaths();
+    // The real tree is fully indexed…
+    QVERIFY(all.contains(root + "/real/inner"));
+    // …the symlink may appear as a selectable leaf, but nothing below it.
+    QVERIFY2(!anyPathStartsWith(all, root + "/link/"),
+             "scan descended into a symlinked directory");
+    QVERIFY(!all.contains(root + "/link/inner"));
+}
+
+void CacheStrategyTest::symlinkCycleTerminatesQuickly()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString root = tmp.path();
+    QVERIFY(QDir().mkpath(root + "/a"));
+    // Symlink pointing back at its parent — an infinite path generator if
+    // the scan follows directory symlinks.
+    QVERIFY(QFile::link(root + "/a", root + "/a/loop"));
+
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(root);
+    // Can't wait for global scanComplete here — init()'s rescan() has a
+    // full home scan in flight. The cycle signature is inflation: without
+    // the symlink guard the loop chain grows by one path per iteration,
+    // so after 1.5 s there would be hundreds of entries under root.
+    QTest::qWait(1500);
+    cache->stopScan();
+
+    int underRoot = 0;
+    for (const QString &p : cache->cachedPaths()) {
+        if (p.startsWith(root + "/")) ++underRoot;
+    }
+    QVERIFY2(underRoot < 5,
+             qPrintable(QString("symlink cycle inflated cache: %1 entries")
+                            .arg(underRoot)));
+}
+
 void CacheStrategyTest::homeTrashIsNotInCacheAfterScan()
 {
     auto *cache = PathCacheManager::instance();

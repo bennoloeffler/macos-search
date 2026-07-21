@@ -40,6 +40,13 @@ private slots:
     void homeLibraryIsNotInCacheAfterScan();
     void homeTrashIsNotInCacheAfterScan();
 
+    // Symlink handling (2026-07-21). Following directory symlinks walks
+    // linked trees twice (~/Dropbox → ~/VundS Dropbox) and loops forever
+    // on ancestor links. Symlinked dirs are cached as leaves, never
+    // descended.
+    void symlinkedDirIsCachedButNotDescended();
+    void symlinkCycleTerminatesQuickly();
+
     // Folder cap (2026-05-19)
     void folderHardCeilingBlocksAdditions();
     // Cap-aware descent (2026-07-21, Block 2): when folder AND file caps
