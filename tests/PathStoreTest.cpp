@@ -478,6 +478,42 @@ void PathStoreTest::saveLoadRoundtripPreservesStore()
     QVERIFY(t.findOrCreatePath("/home/new.txt", PathStore::File) > 0);
 }
 
+void PathStoreTest::reconcileAfterLoadDoesNotInflate()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    const qint32 home = s.findOrCreatePath("/home", PathStore::Folder);
+    QStringList files, dirs;
+    for (int i = 0; i < 500; ++i) files << QStringLiteral("f%1.txt").arg(i);
+    for (int i = 0; i < 50; ++i)  dirs  << QStringLiteral("d%1").arg(i);
+    s.ingestListing(home, files, PathStore::File, -1);
+    s.ingestListing(home, dirs, PathStore::Folder, -1);
+    const int folders0 = s.count(PathStore::Folder);
+    const int files0 = s.count(PathStore::File);
+
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::Folder), folders0);
+    QCOMPARE(t.count(PathStore::File), files0);
+
+    // The warm-start reconcile: re-ingest the SAME listings. Every entry must
+    // be found via the child chain the load rebuilt and returned (not re-added)
+    // — otherwise the counter climbs above the real file count on every restart.
+    const qint32 thome = t.find("/home");
+    QVERIFY(thome >= 0);
+    t.beginScanGeneration();
+    const auto rf = t.ingestListing(thome, files, PathStore::File, -1);
+    const auto rd = t.ingestListing(thome, dirs, PathStore::Folder, -1);
+    QCOMPARE(rf.added, 0);
+    QCOMPARE(rd.added, 0);
+    QCOMPARE(t.count(PathStore::Folder), folders0);
+    QCOMPARE(t.count(PathStore::File), files0);
+}
+
 void PathStoreTest::saveDropsTombstonedNodes()
 {
     QTemporaryDir tmp;

@@ -55,6 +55,10 @@ private slots:
     void loadRefusesWrongFingerprint();
     void loadRefusesTruncatedFile();
     void loadRefusesGarbage();
+    // Warm-start reconcile must not double-count: after load, re-ingesting the
+    // same listings finds every entry via the rebuilt child chain and adds
+    // nothing (the counter cannot climb past the real file count).
+    void reconcileAfterLoadDoesNotInflate();
     void snapshotTiming100k();
 
     // G1 gate (hard-fail): ≤ 36 bytes per entry on 100k realistic names.
