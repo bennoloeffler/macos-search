@@ -14,6 +14,7 @@
 
 class FsEventsWatcher;
 class ExcludeSettings;
+class QTimer;
 class PathStore;
 
 // Singleton manager for in-memory folder path cache
@@ -194,6 +195,12 @@ private:
     // completed scan roots (replaces the old QFileSystemWatcher, which only
     // ever watched $HOME — 1 of ~216k dirs — and can't scale on macOS).
     FsEventsWatcher *m_fsWatcher = nullptr;
+
+    // Coalesces cacheUpdated() from the FSEvents diff path: a burst of change
+    // events (Dropbox sync, build) would otherwise fire one synchronous UI
+    // refresh (updateCacheStatusLabel) per event on the main thread.
+    QTimer *m_liveUpdateThrottle = nullptr;
+    void scheduleLiveCacheUpdate();
 
     // Top-level reduction of m_completedRoots — the set the FSEvents stream
     // covers. Re-armed after each completed scan.

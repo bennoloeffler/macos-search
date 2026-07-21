@@ -11,6 +11,7 @@
 // Defined below; used by onDirectoryChanged/onRescanNeeded above their bodies.
 static bool isPathLevelExcluded(const QString &absolutePath);
 #include <QFileInfo>
+#include <QTimer>
 #include <QQueue>
 #include <QMetaObject>
 #include <QtConcurrent>
@@ -42,6 +43,19 @@ PathCacheManager::PathCacheManager(QObject *parent)
             this, &PathCacheManager::onDirectoryChanged);
     connect(m_fsWatcher, &FsEventsWatcher::rescanNeeded,
             this, &PathCacheManager::onRescanNeeded);
+
+    // Throttle live UI refreshes to at most ~4/sec (see scheduleLiveCacheUpdate).
+    m_liveUpdateThrottle = new QTimer(this);
+    m_liveUpdateThrottle->setSingleShot(true);
+    m_liveUpdateThrottle->setInterval(250);
+    connect(m_liveUpdateThrottle, &QTimer::timeout,
+            this, [this]() { emit cacheUpdated(); });
+}
+
+void PathCacheManager::scheduleLiveCacheUpdate()
+{
+    // Collapse a burst of change events into one delayed cacheUpdated().
+    if (!m_liveUpdateThrottle->isActive()) m_liveUpdateThrottle->start();
 }
 
 void PathCacheManager::setSoftCap(int newCap)
@@ -495,6 +509,15 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
     if (m_stopRequested.loadAcquire()) {
         return;
     }
+    // Skip live diffs WHILE a scan is running. The scan already indexes the
+    // current on-disk state, and diffing here would have the main thread
+    // fight the 8 scan-worker threads for the store's write lock — the
+    // dominant beach-ball cause during the initial/Dropbox scan. Events that
+    // land mid-scan are covered by the scan itself; steady-state events (no
+    // scan running) are processed normally.
+    if (m_scanning.loadAcquire()) {
+        return;
+    }
 
     // FSEvents delivers canonical paths, often with a trailing slash — clean
     // them so store lookups and prefix maths line up.
@@ -522,7 +545,7 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
             return;
         }
         m_store->markDeletedRecursive(dirNode, kBothKinds, nullptr);
-        emit cacheUpdated();
+        scheduleLiveCacheUpdate();
         return;
     }
 
@@ -598,7 +621,7 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         }
     }
 
-    emit cacheUpdated();
+    scheduleLiveCacheUpdate();
 }
 
 // Path-level exclude list.
@@ -1020,12 +1043,12 @@ void PathCacheManager::onRescanNeeded(const QString &path)
     // FSEvents dropped events under `path`: one directory diff isn't enough,
     // re-walk the whole subtree (it lives under a completed root, so expandTo
     // would skip it).
-    if (m_stopRequested.loadAcquire()) return;
+    if (m_stopRequested.loadAcquire() || m_scanning.loadAcquire()) return;
     const QString clean = QDir::cleanPath(path);
     if (isPathLevelExcluded(clean)) return;
     if (m_store->find(clean) < 0) return;
     indexNewSubtree(clean);
-    emit cacheUpdated();
+    scheduleLiveCacheUpdate();
 }
 
 void PathCacheManager::indexNewSubtree(const QString &dirPath)
