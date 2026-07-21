@@ -1305,14 +1305,20 @@ void FolderBrowserDialog::updateCacheStatusLabel()
                                .arg(fmt(cache->folderCount()),
                                     fmt(FileCacheManager::instance()->fileCount()));
 
-    if (cache->isScanning()) {
+    if (cache->loadedFromSnapshot()) {
+        // Warm start (docs/210): the data is available NOW from the cached
+        // index — searchable immediately — while a background pass reconciles
+        // it against disk. GREEN (not the orange "Indexing…"): this is not a
+        // from-scratch reindex, and the count reflects the loaded cache being
+        // reconciled (any climb is genuinely new files the snapshot missed,
+        // never a double-count — see PathStoreTest::reconcileAfterLoad…).
+        const QString suffix = cache->isScanning() ? tr(" · reconciling…")
+                                                   : QString();
+        m_cacheStatusLabel->setText(tr("Ready (cached) — %1%2").arg(counts, suffix));
+        m_cacheStatusLabel->setStyleSheet("color: #27ae60; font-size: 11px;");
+    } else if (cache->isScanning()) {
         m_cacheStatusLabel->setText(tr("Indexing… %1").arg(counts));
         m_cacheStatusLabel->setStyleSheet("color: #e67e22; font-size: 11px;");
-    } else if (cache->loadedFromSnapshot()) {
-        // Warm start (docs/210): searchable immediately from the cached
-        // index while the background rescan reconciles it against disk.
-        m_cacheStatusLabel->setText(tr("Ready (cached) — %1 · verifying…").arg(counts));
-        m_cacheStatusLabel->setStyleSheet("color: #27ae60; font-size: 11px;");
     } else {
         m_cacheStatusLabel->setText(tr("Ready — %1").arg(counts));
         m_cacheStatusLabel->setStyleSheet("color: #27ae60; font-size: 11px;");
