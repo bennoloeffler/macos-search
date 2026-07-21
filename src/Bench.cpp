@@ -23,12 +23,38 @@
 #include <algorithm>
 #include <vector>
 
+#include <mach/mach.h>
+
 namespace Bench {
 
 namespace {
 
 constexpr int kDefaultQueryCount = 100;
 constexpr int kScanTimeoutSec = 120;
+
+// Snapshot of this process's memory use, straight from the kernel.
+// phys_footprint is what Activity Monitor's "Memory" column shows and is
+// the number the design gates (docs/200_pathstore_redesign.md G2) are
+// written against; resident_size is the classic RSS.
+struct MemSample {
+    qint64 physFootprint = 0;
+    qint64 residentSize = 0;
+};
+
+MemSample currentMemoryBytes()
+{
+    MemSample s;
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+        s.physFootprint = static_cast<qint64>(info.phys_footprint);
+        s.residentSize = static_cast<qint64>(info.resident_size);
+    }
+    return s;
+}
+
+double toMb(qint64 bytes) { return bytes / (1024.0 * 1024.0); }
 
 QString takeFlag(QStringList &args, const QString &name)
 {
@@ -127,12 +153,16 @@ int runIfRequested(int argc, char *argv[])
                      &PathCacheManager::scanComplete, &loop,
                      [&loop]() { loop.quit(); });
 
+    const MemSample memBaseline = currentMemoryBytes();
+
     QElapsedTimer scanTimer;
     scanTimer.start();
     timeout.start(kScanTimeoutSec * 1000);
     PathCacheManager::instance()->restartScanFrom(rootArg);
     loop.exec();
     const qint64 scanMs = scanTimer.elapsed();
+
+    const MemSample memAfterScan = currentMemoryBytes();
 
     const int folderCount = PathCacheManager::instance()->folderCount();
     const int fileCount = FileCacheManager::instance()->fileCount();
@@ -175,6 +205,22 @@ int runIfRequested(int argc, char *argv[])
         fileTimes.push_back(t.nsecsElapsed() / 1.0e6);
     }
 
+    const MemSample memAfterQueries = currentMemoryBytes();
+
+    // Derived gate metric (docs/200_pathstore_redesign.md G2): footprint
+    // growth during the scan, divided by the number of cached entries.
+    const qint64 entryCount = static_cast<qint64>(folderCount) + fileCount;
+    const qint64 scanDelta = memAfterScan.physFootprint - memBaseline.physFootprint;
+    const double bytesPerEntry =
+        entryCount > 0 ? static_cast<double>(scanDelta) / entryCount : 0.0;
+
+    err << "[bench] memory: baseline "
+        << QString::number(toMb(memBaseline.physFootprint), 'f', 1)
+        << " MB, after scan "
+        << QString::number(toMb(memAfterScan.physFootprint), 'f', 1)
+        << " MB, ~" << QString::number(bytesPerEntry, 'f', 0) << " B/entry\n";
+    err.flush();
+
     QJsonObject report{
         { "schema", 1 },
         { "timestamp", QDateTime::currentDateTimeUtc().toString(Qt::ISODate) },
@@ -185,6 +231,15 @@ int runIfRequested(int argc, char *argv[])
               { "folder_count", folderCount },
               { "file_count", fileCount },
               { "file_cap_reached", fileCapReached } } },
+        { "memory",
+          QJsonObject{
+              { "baseline_footprint", memBaseline.physFootprint },
+              { "baseline_resident", memBaseline.residentSize },
+              { "after_scan_footprint", memAfterScan.physFootprint },
+              { "after_scan_resident", memAfterScan.residentSize },
+              { "after_queries_footprint", memAfterQueries.physFootprint },
+              { "after_queries_resident", memAfterQueries.residentSize },
+              { "bytes_per_entry", bytesPerEntry } } },
         { "query_count", queryCount },
         { "folder_search", percentiles(folderTimes) },
         { "file_search", percentiles(fileTimes) }

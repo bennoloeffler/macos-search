@@ -45,6 +45,27 @@ Exits with the test runner's status. 60 tests at the time of writing
     tail -50 /tmp/macos-search.log
     ./scripts/ui-drive.sh quit
 
+### E. Memory benchmarking
+
+    ./build/macos-search.app/Contents/MacOS/macos-search \
+        --bench --bench-root ~/projects --bench-queries 50 > report.json
+
+The `--bench` JSON report contains a `memory` object sampled via mach
+`task_info(TASK_VM_INFO)` at three points — `baseline` (before the scan),
+`after_scan`, `after_queries` — each as `*_footprint` (`phys_footprint`,
+what Activity Monitor shows) and `*_resident` (classic RSS). The derived
+`bytes_per_entry` is the scan footprint delta divided by
+`folder_count + file_count`; a one-line summary also goes to stderr.
+These are the numbers behind gates G2/G4 in `docs/200_pathstore_redesign.md`.
+
+To compare two builds (e.g. baseline vs. a memory-reduction branch):
+
+    scripts/mem-compare.sh <binary-A> <binary-B> [--root PATH] [--queries N]
+
+Runs both with `--bench` on the same root and prints entries, B/entry
+for each, and the reduction factor A/B (~1.0 when A == B). Raw JSON
+reports are kept in a temp dir whose path is printed. `--help` for details.
+
 ## Safety properties
 
 These come up because the harness is automated:
