@@ -205,17 +205,17 @@ PathStore::Ingest PathStore::ingestListing(qint32 dir, const QStringList &names,
     m_nodes[size_t(dir)].pad = quint16(m_generation | kListedBit);
 
     // Existing children matter only when the dir already has some (relist /
-    // overlap). Snapshot them once — never a per-entry store lookup.
+    // overlap — every dir on a warm-start reconcile). Walk the child CHAIN,
+    // O(#children) — NOT a linear scan of the whole node array. The old
+    // dir+1..n scan was O(total nodes) per directory, so a reconcile of a
+    // loaded snapshot was O(dirs × nodes) ≈ hundreds of billions of ops and
+    // froze the app for minutes. This is the load-bearing warm-start fix.
     QHash<QByteArray, qint32> existing;
-    if (m_nodes[size_t(dir)].flags & kHasChild) {
-        const qint32 n = qint32(m_nodes.size());
-        for (qint32 i = dir + 1; i < n; ++i) {
-            const Node &nd = m_nodes[size_t(i)];
-            if (nd.parent == dir) {
-                existing.insert(QByteArray(m_names.constData() + nd.nameOff,
-                                           nd.nameLen), i);
-            }
-        }
+    for (qint32 i = m_nodes[size_t(dir)].firstChild; i >= 0;
+         i = m_nodes[size_t(i)].nextSibling) {
+        const Node &nd = m_nodes[size_t(i)];
+        existing.insert(QByteArray(m_names.constData() + nd.nameOff,
+                                   nd.nameLen), i);
     }
 
     r.nodes.reserve(names.size());
@@ -388,8 +388,9 @@ void PathStore::clear()
 
 int PathStore::count(Kind k) const
 {
-    QReadLocker lock(&m_lock);
-    return m_counts[k];
+    // Lock-free (atomic read) — see m_counts in the header. Never blocks the
+    // main-thread status-label poll behind the scan workers' write lock.
+    return m_counts[k].load(std::memory_order_relaxed);
 }
 
 qint64 PathStore::bytesUsed() const

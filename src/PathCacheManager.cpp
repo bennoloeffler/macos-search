@@ -10,6 +10,7 @@
 
 // Defined below; used by onDirectoryChanged/onRescanNeeded above their bodies.
 static bool isPathLevelExcluded(const QString &absolutePath);
+static bool isOpaqueBundle(const QString &basename);
 #include <QFileInfo>
 #include <QTimer>
 #include <QQueue>
@@ -584,6 +585,10 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         if (cachedFolders.contains(entry)) continue;
         const QString childPath = prefix + entry;
         addPathToCache(childPath);
+        // Opaque bundles (.app, .photoslibrary) are cached as a single leaf,
+        // never walked — walking a freshly-dropped .app (hundreds of Qt
+        // framework files) on the main thread froze the UI.
+        if (isOpaqueBundle(entry)) continue;
         // Walk its subtree now — FSEvents delivers descendant events out of
         // order, so we can't wait for the child's own event to arrive.
         indexNewSubtree(childPath);

@@ -7,6 +7,7 @@
 #include <QReadWriteLock>
 #include <QString>
 #include <QStringList>
+#include <atomic>
 #include <vector>
 
 // The ONLY place cached path data lives (design: docs/200_pathstore_redesign.md).
@@ -147,7 +148,12 @@ private:
 
     std::vector<Node> m_nodes;
     QByteArray        m_names;          // ONE arena: concatenated UTF-8 names
-    int               m_counts[2] = {0, 0};
+    // Atomic so count() can read WITHOUT taking m_lock. The status label polls
+    // count() every 200ms on the main thread; if it needed the read lock it
+    // would starve behind the 8 scan-worker write locks and freeze the UI
+    // during a scan (the reconcile-freeze regression). Writes still happen
+    // under m_lock; the atomic just makes the read lock-free.
+    std::atomic<int>  m_counts[2] = {};
     quint16           m_generation = 0; // current scan generation (mark-and-sweep)
     mutable QReadWriteLock m_lock;
 };
