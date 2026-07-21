@@ -173,21 +173,12 @@ int main(int argc, char *argv[])
     dialog.setWindowFlag(Qt::Window, true);
     dialog.show();
 
-    // First-run autostart prompt. Only fires in production builds (i.e. when
-    // running from /Applications or ~/Applications). Dev runs from a build*
-    // directory never prompt, so we don't accidentally register a transient
-    // dev binary as the user's at-login app. See src/Autostart.cpp and
-    // docs/todos.md TODO 5.
-    if (Autostart::firstRunNeedsPrompt()) {
-        // Mark BEFORE exec: "ask once" must hold even if the app is quit
-        // while the prompt is open (exec never returns then, and the
-        // prompt used to reappear on every launch). Autostart itself
-        // remains changeable in Preferences.
-        Autostart::markFirstRunCompleted();
-        FirstRunDialog firstRun(&dialog);
-        firstRun.exec();
-        Autostart::applyFirstRunChoice(firstRun.result() == QDialog::Accepted);
-    }
+    // No first-run autostart prompt. It was a modal dialog on every startup
+    // (exec() blocks the main thread) and its "ask once" flag proved
+    // unreliable in the bundled app, so it reappeared constantly. Autostart
+    // is fully controllable in Preferences (a checkbox, default off) — that
+    // is the right place for a non-essential background-launch preference,
+    // and a startup modal is exactly the friction we want to avoid.
 
     if (auto *searchField = dialog.findChild<QLineEdit *>("searchField")) {
         searchField->setFocus();
