@@ -34,6 +34,12 @@ private slots:
     void applicationsPathIsNotInCacheAfterScan();
     void optPathIsNotInCacheAfterScan();
 
+    // ~/Library + ~/.Trash excludes (2026-07-21 — descending into
+    // ~/Library trips macOS TCC privacy prompts: Reminders, Contacts,
+    // other apps' containers).
+    void homeLibraryIsNotInCacheAfterScan();
+    void homeTrashIsNotInCacheAfterScan();
+
     // Folder cap (2026-05-19)
     void folderHardCeilingBlocksAdditions();
     // Cap-aware descent (2026-07-21, Block 2): when folder AND file caps

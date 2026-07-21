@@ -226,6 +226,38 @@ void CacheStrategyTest::optPathIsNotInCacheAfterScan()
 }
 
 // ---------------------------------------------------------------------------
+// ~/Library + ~/.Trash excludes. Descending into ~/Library trips macOS TCC
+// privacy prompts ("access your reminders / contacts / data from other
+// apps") because Reminders, AddressBook, and other apps' containers live
+// there. Nothing under it is user-searchable content — exclude the subtree.
+// ---------------------------------------------------------------------------
+
+void CacheStrategyTest::homeLibraryIsNotInCacheAfterScan()
+{
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(QDir::homePath());
+    // Home's first-level children are enumerated within the first BFS
+    // round, so ~/Library would land in the cache almost immediately if
+    // it weren't excluded.
+    QTest::qWait(800);
+    cache->stopScan();
+    const QString lib = QDir::homePath() + QStringLiteral("/Library");
+    QVERIFY2(!anyPathStartsWith(cache->cachedPaths(), lib),
+             qPrintable(lib + " leaked into the cache"));
+}
+
+void CacheStrategyTest::homeTrashIsNotInCacheAfterScan()
+{
+    auto *cache = PathCacheManager::instance();
+    cache->expandTo(QDir::homePath());
+    QTest::qWait(800);
+    cache->stopScan();
+    const QString trash = QDir::homePath() + QStringLiteral("/.Trash");
+    QVERIFY2(!anyPathStartsWith(cache->cachedPaths(), trash),
+             qPrintable(trash + " leaked into the cache"));
+}
+
+// ---------------------------------------------------------------------------
 // Folder cap behavior
 // ---------------------------------------------------------------------------
 

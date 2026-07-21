@@ -595,7 +595,8 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
 // matched as "exact match" or "starts with PATH/".
 static const QStringList &pathLevelExcludes()
 {
-    static const QStringList kExcludes = {
+    static const QStringList kExcludes = []() {
+        QStringList l = {
         // OS-managed roots — millions of files nobody browses interactively.
         QStringLiteral("/System"),
         QStringLiteral("/private"),
@@ -623,7 +624,19 @@ static const QStringList &pathLevelExcludes()
         QStringLiteral("/.TemporaryItems"),
         QStringLiteral("/.MobileBackups"),
         QStringLiteral("/.HFS+ Private Directory Data"),
-    };
+        };
+
+        // Per-user excludes. ~/Library holds app-private data — Reminders,
+        // AddressBook, other apps' sandbox containers. Descending into it
+        // triggers macOS TCC privacy prompts ("would like to access your
+        // reminders / contacts / data from other apps") and indexes nothing
+        // a user ever picks in a folder dialog. ~/.Trash: deleted files
+        // must not surface as search results.
+        const QString home = QDir::homePath();
+        l << home + QStringLiteral("/Library")
+          << home + QStringLiteral("/.Trash");
+        return l;
+    }();
     return kExcludes;
 }
 
