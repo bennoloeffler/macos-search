@@ -34,6 +34,8 @@ enable_testing()
 # Shared sources (used by both app and tests)
 # ---------------------------------------------------------------------------
 set(MACOS_SEARCH_LIB_SOURCES
+    src/PathStore.cpp
+    src/PathStore.h
     src/PathCacheManager.cpp
     src/PathCacheManager.h
     src/FileCacheManager.cpp
@@ -160,6 +162,8 @@ endif()
 # ---------------------------------------------------------------------------
 set(MACOS_SEARCH_TEST_SOURCES
     tests/test_main.cpp
+    tests/PathStoreTest.cpp
+    tests/PathStoreTest.h
     tests/PathCacheManagerTest.cpp
     tests/PathCacheManagerTest.h
     tests/SearchFieldTest.cpp
