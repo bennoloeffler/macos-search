@@ -157,24 +157,65 @@ void ExcludeSettings::resetToDefaults()
 QStringList ExcludeSettings::defaultPatterns()
 {
     return QStringList{
+        // Dependency / build output
         "node_modules",
+        "bower_components",
+        "Pods",
         ".venv",
         "venv",
         "__pycache__",
-        ".git",
         "build",
+        "build-*",
+        "cmake-build-*",
+        "CMakeFiles",
         "dist",
         "out",
-        ".gradle",
-        ".idea",
-        ".vscode",
-        "vendor",
-        ".tox",
         "target",
-        ".cache",
+        "vendor",
+        "*.egg-info",
+
+        // Version control internals
+        ".git",
+        ".svn",
+        ".hg",
+
+        // Package registries / toolchain installs — hundreds of thousands
+        // of entries under $HOME that nobody picks in a folder dialog.
+        ".cargo",
+        ".rustup",
+        ".m2",
+        ".gradle",
+        ".nvm",
         ".npm",
         ".yarn",
-        "*.egg-info"
+        ".pnpm-store",
+        ".node-gyp",
+        ".gem",
+        ".bundle",
+        ".pyenv",
+        ".rbenv",
+        ".android",
+
+        // Tool caches
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".cpcache",     // Clojure classpath cache
+        ".lsp",         // clojure-lsp cache
+        ".clj-kondo",
+        ".next",
+        ".nuxt",
+        ".turbo",
+        ".parcel-cache",
+        ".terraform",
+        ".docker",
+        ".dropbox.cache",
+
+        // IDE state
+        ".idea",
+        ".vscode",
     };
 }
 
@@ -314,6 +355,11 @@ QStringList ExcludeSettings::defaultFilePatterns()
 // Persistence
 // ============================================================================
 
+// Bump when defaultPatterns() gains entries. On load, saved settings from
+// an older version get the new defaults appended (enabled) — user-added
+// patterns and enable/disable choices are untouched.
+static constexpr int kFolderDefaultsVersion = 2;
+
 void ExcludeSettings::load()
 {
     QSettings settings;
@@ -336,6 +382,19 @@ void ExcludeSettings::load()
         m_patterns = defaultPatterns();
         for (const QString &pattern : m_patterns) {
             m_enabledPatterns.insert(pattern);
+        }
+    }
+
+    // Defaults-version migration: merge defaults added since the settings
+    // were last saved. A deliberately removed default reappears once here;
+    // disabling it again sticks (the version marker advances on save).
+    if (settings.value("folderDefaultsVersion", 1).toInt()
+        < kFolderDefaultsVersion) {
+        for (const QString &pattern : defaultPatterns()) {
+            if (!m_patterns.contains(pattern)) {
+                m_patterns.append(pattern);
+                m_enabledPatterns.insert(pattern);
+            }
         }
     }
 
@@ -373,6 +432,7 @@ void ExcludeSettings::save()
     settings.beginGroup("ExcludeSettings");
     settings.setValue("folderPatterns", folderPatternsCopy);
     settings.setValue("enabledFolderPatterns", enabledFolderCopy);
+    settings.setValue("folderDefaultsVersion", kFolderDefaultsVersion);
     settings.setValue("filePatterns", filePatternsCopy);
     settings.setValue("enabledFilePatterns", enabledFileCopy);
 

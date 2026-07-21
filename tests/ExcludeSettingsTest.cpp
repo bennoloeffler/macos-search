@@ -65,6 +65,59 @@ void ExcludeSettingsTest::testDefaultPatternsContainsVenv()
     QVERIFY(defaults.contains(".venv") || defaults.contains("venv"));
 }
 
+void ExcludeSettingsTest::testDefaultPatternsContainToolCaches()
+{
+    const QStringList defaults = ExcludeSettings::defaultPatterns();
+    // Spot-check the 2026-07-21 additions: package registries and tool
+    // caches that bloat a dev home by hundreds of thousands of entries.
+    for (const char *p : { ".cargo", ".rustup", ".m2", ".nvm", ".android",
+                           ".mypy_cache", ".pytest_cache", ".cpcache",
+                           ".next", "Pods", ".svn", ".dropbox.cache" }) {
+        QVERIFY2(defaults.contains(QLatin1String(p)),
+                 qPrintable(QString("missing default pattern: %1").arg(p)));
+    }
+}
+
+void ExcludeSettingsTest::testUpgradeMergesNewDefaultsIntoSavedSettings()
+{
+    // Simulate an existing install: saved folder patterns WITHOUT the new
+    // defaults and no defaults-version marker.
+    {
+        QSettings s;
+        s.beginGroup("ExcludeSettings");
+        s.setValue("folderPatterns", QStringList{"node_modules", ".git"});
+        s.setValue("enabledFolderPatterns", QStringList{"node_modules", ".git"});
+        s.endGroup();
+        s.sync();
+    }
+
+    ExcludeSettings settings;
+    QVERIFY(settings.allPatterns().contains(".cargo"));
+    QVERIFY(settings.isPatternEnabled(".cargo"));
+    QVERIFY(settings.shouldExclude(".cargo"));
+}
+
+void ExcludeSettingsTest::testUpgradeKeepsUserAddedAndDisabledPatterns()
+{
+    {
+        QSettings s;
+        s.beginGroup("ExcludeSettings");
+        // User added "my-secret-stuff" and disabled ".git".
+        s.setValue("folderPatterns",
+                   QStringList{"node_modules", ".git", "my-secret-stuff"});
+        s.setValue("enabledFolderPatterns",
+                   QStringList{"node_modules", "my-secret-stuff"});
+        s.endGroup();
+        s.sync();
+    }
+
+    ExcludeSettings settings;
+    QVERIFY(settings.allPatterns().contains("my-secret-stuff"));
+    QVERIFY(settings.isPatternEnabled("my-secret-stuff"));
+    QVERIFY(!settings.isPatternEnabled(".git"));  // user's choice survives
+    QVERIFY(settings.allPatterns().contains(".rustup"));  // new default merged
+}
+
 // Pattern management tests
 
 void ExcludeSettingsTest::testAllPatternsReturnsAllPatterns()

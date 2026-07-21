@@ -17,6 +17,10 @@ private slots:
     void testDefaultPatternsContainsNodeModules();
     void testDefaultPatternsContainsGit();
     void testDefaultPatternsContainsVenv();
+    // 2026-07-21: package registries / tool caches joined the defaults.
+    void testDefaultPatternsContainToolCaches();
+    void testUpgradeMergesNewDefaultsIntoSavedSettings();
+    void testUpgradeKeepsUserAddedAndDisabledPatterns();
 
     // Pattern management tests
     void testAllPatternsReturnsAllPatterns();

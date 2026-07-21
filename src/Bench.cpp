@@ -21,6 +21,7 @@
 #include <QTextStream>
 #include <QTimer>
 #include <algorithm>
+#include <climits>
 #include <vector>
 
 #include <mach/mach.h>
@@ -129,10 +130,20 @@ int runIfRequested(int argc, char *argv[])
     const int queryCount = queriesArg.isEmpty()
                                ? kDefaultQueryCount
                                : qMax(10, queriesArg.toInt());
+    // --bench-uncapped lifts both caches' caps to INT_MAX so the bench
+    // measures the true size of the tree, not the cap.
+    const bool uncapped = args.removeAll(QStringLiteral("--bench-uncapped")) > 0;
+    if (uncapped) {
+        PathCacheManager::instance()->setHardCeiling(INT_MAX);
+        PathCacheManager::instance()->setSoftCap(INT_MAX);
+        FileCacheManager::instance()->setHardCeiling(INT_MAX);
+        FileCacheManager::instance()->setSoftCap(INT_MAX);
+    }
 
     QTextStream out(stdout);
     QTextStream err(stderr);
-    err << "[bench] root=" << rootArg << " queries=" << queryCount << "\n";
+    err << "[bench] root=" << rootArg << " queries=" << queryCount
+        << (uncapped ? " (uncapped)" : "") << "\n";
     err.flush();
 
     // The cache stores absolute file/folder paths. The scan walks from the
@@ -141,11 +152,14 @@ int runIfRequested(int argc, char *argv[])
     ExcludeSettings settings;
     PathCacheManager::instance()->setExcludeSettings(&settings);
 
+    // Uncapped runs walk the whole tree — give them ten minutes.
+    const int scanTimeoutSec = uncapped ? 600 : kScanTimeoutSec;
+
     QEventLoop loop;
     QTimer timeout;
     timeout.setSingleShot(true);
     QObject::connect(&timeout, &QTimer::timeout, &loop, [&]() {
-        err << "[bench] scan timed out after " << kScanTimeoutSec << "s\n";
+        err << "[bench] scan timed out after " << scanTimeoutSec << "s\n";
         err.flush();
         loop.quit();
     });
@@ -157,7 +171,7 @@ int runIfRequested(int argc, char *argv[])
 
     QElapsedTimer scanTimer;
     scanTimer.start();
-    timeout.start(kScanTimeoutSec * 1000);
+    timeout.start(scanTimeoutSec * 1000);
     PathCacheManager::instance()->restartScanFrom(rootArg);
     loop.exec();
     const qint64 scanMs = scanTimer.elapsed();
