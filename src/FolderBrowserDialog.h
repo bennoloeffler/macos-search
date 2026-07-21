@@ -87,7 +87,19 @@ private slots:
     void onContentMatches(const QList<ContentMatch> &matches);
     void onContentFinished(int total);
 
+public:
+    // Test seam: suppress the `/usr/bin/open` shell-out so the aggregate
+    // test runner never spawns Finder/app windows when exercising the
+    // open/reveal slots. The app itself never sets this. Set once in
+    // tests/test_main.cpp.
+    static void setShellOpenSuppressedForTests(bool suppress);
+
 private:
+    // All Finder/app launches funnel through here so the test seam above
+    // gates every one. `args` is the argv passed to /usr/bin/open.
+    void launchOpen(const QStringList &args);
+    static bool s_shellOpenSuppressed;
+
     void setupUi();
     void navigateTo(const QString &path);
     void updateUpButtonState();

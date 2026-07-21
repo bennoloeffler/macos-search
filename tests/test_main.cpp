@@ -20,6 +20,7 @@
 #include "SearchFieldTest.h"
 #include "PathSelectorStateTest.h"
 #include "FolderBrowserDialogTest.h"
+#include "FolderBrowserDialog.h"
 #include "UserInteractionTest.h"
 #include "UsabilityTest.h"
 #include "CacheStrategyTest.h"
@@ -58,6 +59,10 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName("v-und-s");
     QCoreApplication::setOrganizationDomain("v-und-s.de");
     QCoreApplication::setApplicationName("macos-search-tests");
+
+    // Never let tests shell out to `/usr/bin/open` — the open/reveal slots
+    // would otherwise spawn Finder/app windows on every suite run.
+    FolderBrowserDialog::setShellOpenSuppressedForTests(true);
 
     // Parse --filter <ClassName> (everything else passes through to QTest).
     QString testFilter;
