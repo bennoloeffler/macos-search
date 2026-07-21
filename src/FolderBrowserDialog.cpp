@@ -902,7 +902,7 @@ void FolderBrowserDialog::onFolderDoubleClicked(const QModelIndex &index)
         navigateTo(path);
     } else if (info.exists()) {
         m_selectedPath = path;
-        QProcess::startDetached("/usr/bin/open", { path });
+        launchOpen({ path });
     }
 }
 
@@ -917,6 +917,24 @@ void FolderBrowserDialog::onChooseClicked()
     onOpenInAppClicked();
 }
 
+bool FolderBrowserDialog::s_shellOpenSuppressed = false;
+
+void FolderBrowserDialog::setShellOpenSuppressedForTests(bool suppress)
+{
+    s_shellOpenSuppressed = suppress;
+}
+
+void FolderBrowserDialog::launchOpen(const QStringList &args)
+{
+    // Under the test runner this is a no-op — the slots still set
+    // m_selectedPath (the observable the tests assert), but no Finder or
+    // app window is ever spawned.
+    if (s_shellOpenSuppressed) {
+        return;
+    }
+    QProcess::startDetached(QStringLiteral("/usr/bin/open"), args);
+}
+
 void FolderBrowserDialog::onOpenInFinderClicked()
 {
     // Standalone-app drift: reveal the path in Finder (parent view, item
@@ -926,7 +944,7 @@ void FolderBrowserDialog::onOpenInFinderClicked()
         return;
     }
     m_selectedPath = path;
-    QProcess::startDetached("/usr/bin/open", {QStringLiteral("-R"), path});
+    launchOpen({QStringLiteral("-R"), path});
 }
 
 void FolderBrowserDialog::onOpenInAppClicked()
@@ -938,7 +956,7 @@ void FolderBrowserDialog::onOpenInAppClicked()
         return;
     }
     m_selectedPath = path;
-    QProcess::startDetached("/usr/bin/open", {path});
+    launchOpen({path});
 }
 
 void FolderBrowserDialog::onUpClicked()
@@ -1164,7 +1182,7 @@ void FolderBrowserDialog::onSearchResultDoubleClicked(QListWidgetItem *item)
     QString path = item->data(Qt::UserRole).toString();
     if (path.isEmpty()) return;
     m_selectedPath = path;
-    QProcess::startDetached("/usr/bin/open", {path});
+    launchOpen({path});
 }
 
 void FolderBrowserDialog::onExcludeButtonClicked()
