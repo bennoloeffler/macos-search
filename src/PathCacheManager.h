@@ -2,6 +2,7 @@
 #define PATHCACHEMANAGER_H
 
 #include <QObject>
+#include <QByteArray>
 #include <QString>
 #include <QStringList>
 #include <QThread>
@@ -47,6 +48,24 @@ public:
 
     // Get all cached paths (thread-safe copy)
     QStringList cachedPaths() const;
+
+    // Fingerprint over everything that shapes the on-disk index: the format
+    // version, the enabled folder+file exclude patterns (sorted), the
+    // path-level exclude list (incl. $HOME), and both caches' soft caps +
+    // hard ceilings. A loaded snapshot is only trusted when this matches
+    // (docs/210_persistent_index.md). SHA-256, 32 bytes.
+    static constexpr quint32 kIndexFormatVersion = 1;
+    QByteArray indexFingerprint() const;
+
+    // Snapshot warm-start (docs/210). tryLoadSnapshot() runs on the main
+    // thread BEFORE any scan starts: it loads ~/.macos-search/index-v1.bin
+    // into the shared store if the fingerprint matches, emits cacheUpdated,
+    // and sets loadedFromSnapshot(). saveSnapshot() writes the current store
+    // (called from finishScan and on aboutToQuit). Both no-op safely if the
+    // config dir is absent.
+    static bool tryLoadSnapshot();
+    void saveSnapshot() const;
+    bool loadedFromSnapshot() const { return m_loadedFromSnapshot.loadAcquire() != 0; }
 
     // Search the cache (instant, in-memory)
     // Returns paths matching the query, limited to maxResults
@@ -162,6 +181,10 @@ private:
     // Filesystem watcher for real-time updates
     QFileSystemWatcher *m_watcher = nullptr;
     bool m_watcherLimitReached = false;
+
+    // Set when a snapshot was loaded at startup; cleared on the first live
+    // scanComplete so the UI can show "verifying…" only while reconciling.
+    QAtomicInt m_loadedFromSnapshot{0};
 
     // Scan state
     QThread *m_scanThread = nullptr;

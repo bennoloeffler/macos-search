@@ -3,6 +3,7 @@
 #include "ExcludeSettings.h"
 #include "FileCacheManager.h"
 #include "PathCacheManager.h"
+#include "PathStore.h"
 
 #include <QDir>
 #include <QFile>
@@ -478,4 +479,203 @@ void CacheStrategyTest::expandToUserBumpsFileSoftCap()
 
     fc->setSoftCap(FileCacheManager::kDefaultSoftCap);
     fc->setHardCeiling(FileCacheManager::kDefaultHardCeiling);
+}
+
+// ---------------------------------------------------------------------------
+// Persistent index — warm start + reconciliation (docs/210)
+// ---------------------------------------------------------------------------
+
+void CacheStrategyTest::indexFingerprintReflectsIngredients()
+{
+    auto *cache = PathCacheManager::instance();
+    auto *fc = FileCacheManager::instance();
+    cache->stopScan();
+
+    const QByteArray base = cache->indexFingerprint();
+    QVERIFY(!base.isEmpty());
+    QCOMPARE(cache->indexFingerprint(), base);   // deterministic
+
+    // Folder soft cap is an ingredient.
+    const int savedSoft = cache->softCap();
+    cache->setSoftCap(savedSoft == 12345 ? 12346 : 12345);
+    QVERIFY(cache->indexFingerprint() != base);
+    cache->setSoftCap(savedSoft);
+    QCOMPARE(cache->indexFingerprint(), base);
+
+    // File soft cap is an ingredient.
+    const int savedFile = fc->softCap();
+    fc->setSoftCap(savedFile == 7777 ? 7778 : 7777);
+    QVERIFY(cache->indexFingerprint() != base);
+    fc->setSoftCap(savedFile);
+    QCOMPARE(cache->indexFingerprint(), base);
+
+    // Enabled exclude patterns are an ingredient.
+    QVERIFY(g_excludeSettings);
+    const QString probe = QStringLiteral("__fingerprint_probe__");
+    g_excludeSettings->addPattern(probe);
+    g_excludeSettings->setPatternEnabled(probe, true);
+    QVERIFY(cache->indexFingerprint() != base);
+    g_excludeSettings->removePattern(probe);
+    QCOMPARE(cache->indexFingerprint(), base);
+}
+
+namespace {
+
+// Fixed fingerprint for the reconcile tests — they save/load the shared
+// store to a QTemporaryDir file directly (hermetic; never touches the real
+// ~/.macos-search). The fingerprint helper itself is covered above.
+const QByteArray kReconcileFp = QByteArrayLiteral("cachestrategy-reconcile-fp");
+
+// Scan `root` from cold into the shared store and wait for completion.
+// init() already ran rescan() (clearing completedRoots) before this test, so
+// stopping its in-flight home scan and wiping the store is enough — no need
+// for another full $HOME rescan, which only thrashes the disk.
+void scanRootFresh(PathCacheManager *cache, const QString &root)
+{
+    cache->stopScan();
+    PathStore::shared()->clear();
+    FileCacheManager::instance()->clear();
+    QTest::qWait(10);
+    cache->expandTo(root);
+    waitForScanComplete(cache);
+}
+
+}  // anonymous
+
+void CacheStrategyTest::snapshotRoundtripThroughScan()
+{
+    QTemporaryDir tmp, snap;
+    QVERIFY(tmp.isValid() && snap.isValid());
+    const QString root = tmp.path();
+    QVERIFY(QDir().mkpath(root + "/projects/app"));
+    QFile(root + "/projects/app/main.cpp").open(QIODevice::WriteOnly);
+    QFile(root + "/projects/notes.txt").open(QIODevice::WriteOnly);
+
+    auto *cache = PathCacheManager::instance();
+    auto *fc = FileCacheManager::instance();
+    FileCacheManager::setHomeOverrideForTests(root);
+    auto restore = qScopeGuard([] {
+        FileCacheManager::setHomeOverrideForTests(QString());
+    });
+
+    scanRootFresh(cache, root);
+    const int folders = cache->folderCount();
+    const int files = fc->fileCount();
+    QVERIFY(files >= 2);
+    const QStringList before = cache->search("app", root, 100);
+    QVERIFY(!before.isEmpty());
+
+    const QString file = snap.path() + "/index.bin";
+    QVERIFY(PathStore::shared()->saveTo(file, kReconcileFp));
+
+    // "Restart": wipe the in-memory store, then load the snapshot back.
+    PathStore::shared()->clear();
+    QCOMPARE(cache->folderCount(), 0);
+    QVERIFY(PathStore::shared()->loadFrom(file, kReconcileFp));
+
+    QCOMPARE(cache->folderCount(), folders);
+    QCOMPARE(fc->fileCount(), files);
+    QCOMPARE(cache->search("app", root, 100), before);
+    QVERIFY(fc->contains(root + "/projects/app/main.cpp"));
+}
+
+void CacheStrategyTest::snapshotDeletionReconciledOnRescan()
+{
+    QTemporaryDir tmp, snap;
+    QVERIFY(tmp.isValid() && snap.isValid());
+    const QString root = tmp.path();
+    QVERIFY(QDir().mkpath(root + "/dir"));
+    const QString victim = root + "/dir/gone.txt";
+    QFile(victim).open(QIODevice::WriteOnly);
+    QFile(root + "/dir/stay.txt").open(QIODevice::WriteOnly);
+
+    auto *cache = PathCacheManager::instance();
+    auto *fc = FileCacheManager::instance();
+    FileCacheManager::setHomeOverrideForTests(root);
+    auto restore = qScopeGuard([] {
+        FileCacheManager::setHomeOverrideForTests(QString());
+    });
+
+    scanRootFresh(cache, root);
+    QVERIFY(fc->contains(victim));
+
+    const QString file = snap.path() + "/index.bin";
+    QVERIFY(PathStore::shared()->saveTo(file, kReconcileFp));
+    PathStore::shared()->clear();
+    QVERIFY(PathStore::shared()->loadFrom(file, kReconcileFp));
+    QVERIFY(fc->contains(victim));                 // present in the warm store
+
+    // File deleted while "app was closed" → gone after the covering rescan.
+    QVERIFY(QFile::remove(victim));
+    cache->restartScanFrom(root);
+    waitForScanComplete(cache);
+
+    QVERIFY2(!fc->contains(victim), "deleted file survived reconciliation");
+    QVERIFY(fc->contains(root + "/dir/stay.txt"));
+}
+
+void CacheStrategyTest::snapshotAdditionReconciledOnRescan()
+{
+    QTemporaryDir tmp, snap;
+    QVERIFY(tmp.isValid() && snap.isValid());
+    const QString root = tmp.path();
+    QVERIFY(QDir().mkpath(root + "/dir"));
+    QFile(root + "/dir/old.txt").open(QIODevice::WriteOnly);
+
+    auto *cache = PathCacheManager::instance();
+    auto *fc = FileCacheManager::instance();
+    FileCacheManager::setHomeOverrideForTests(root);
+    auto restore = qScopeGuard([] {
+        FileCacheManager::setHomeOverrideForTests(QString());
+    });
+
+    scanRootFresh(cache, root);
+
+    const QString file = snap.path() + "/index.bin";
+    QVERIFY(PathStore::shared()->saveTo(file, kReconcileFp));
+    PathStore::shared()->clear();
+    QVERIFY(PathStore::shared()->loadFrom(file, kReconcileFp));
+
+    // File created while "app was closed" → present after the covering rescan.
+    const QString born = root + "/dir/new.txt";
+    QVERIFY(!fc->contains(born));
+    QFile(born).open(QIODevice::WriteOnly);
+    cache->restartScanFrom(root);
+    waitForScanComplete(cache);
+
+    QVERIFY2(fc->contains(born), "new file missed by reconciliation");
+    QVERIFY(fc->contains(root + "/dir/old.txt"));
+}
+
+void CacheStrategyTest::snapshotSkippedSubtreeSurvivesRescan()
+{
+    // THE skipped-subtree hazard end-to-end (docs/210 review): a subtree
+    // scanned as an earlier root (m_completedRoots) is skipped by a later
+    // parent-root scan. The parent-was-listed sweep rule must NOT wipe it.
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString root = tmp.path();
+    QVERIFY(QDir().mkpath(root + "/sub/inner"));
+    QVERIFY(QDir().mkpath(root + "/top"));
+
+    auto *cache = PathCacheManager::instance();
+    cache->stopScan();               // halt init()'s in-flight home scan
+    PathStore::shared()->clear();    // clean store (completedRoots already empty)
+    QTest::qWait(10);
+
+    // Scan the subtree as its own root first → lands in m_completedRoots.
+    cache->expandTo(root + "/sub");
+    waitForScanComplete(cache);
+    QVERIFY(cache->cachedPaths().contains(root + "/sub/inner"));
+
+    // Now scan the parent. The scan skips descending into the already-
+    // completed /sub, so /sub is seen (as a child of root) but never listed
+    // this generation — its children must survive the sweep.
+    cache->expandTo(root);
+    waitForScanComplete(cache);
+
+    const QStringList all = cache->cachedPaths();
+    QVERIFY2(all.contains(root + "/sub/inner"),
+             "skipped subtree was wrongly swept by the parent-root scan");
+    QVERIFY(all.contains(root + "/top"));
 }

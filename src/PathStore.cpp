@@ -1,6 +1,8 @@
 #include "PathStore.h"
 
+#include <QFile>
 #include <QReadLocker>
+#include <QSaveFile>
 #include <QWriteLocker>
 #include <QHash>
 #include <QVarLengthArray>
@@ -119,6 +121,65 @@ void PathStore::makeEntryLocked(qint32 node, Kind kind)
     ++m_counts[kind];
 }
 
+void PathStore::stampSeenLocked(qint32 node)
+{
+    Node &nd = m_nodes[size_t(node)];
+    // Refresh to the current generation only if it carries a stale one — that
+    // also drops any listed bit left over from an earlier generation, so a
+    // node seen-but-not-relisted this run reads as "not listed this gen".
+    if ((nd.pad & kGenMask) != m_generation) nd.pad = m_generation;
+}
+
+void PathStore::beginScanGeneration()
+{
+    QWriteLocker lock(&m_lock);
+    // 15-bit space. On wrap, normalize every node back to generation 0 so a
+    // stale value can never alias the fresh generation (docs/210 review).
+    if (m_generation >= kGenMask) {
+        for (Node &nd : m_nodes) nd.pad = 0;
+        m_generation = 0;
+    }
+    ++m_generation;
+}
+
+int PathStore::sweepStale(qint32 root)
+{
+    QWriteLocker lock(&m_lock);
+    const qint32 n = qint32(m_nodes.size());
+    if (root < 0 || root >= n) return 0;
+
+    // Forward pass over the subtree. A node is condemned iff an ancestor is
+    // condemned, OR its parent was listed this generation but the node itself
+    // was not seen in that listing. The root is never swept. This is the
+    // load-bearing "parent-was-listed" rule: children of parents skipped this
+    // run (e.g. an already-scanned Desktop under a later home scan) survive.
+    std::vector<char> inSub(size_t(n - root), 0);
+    std::vector<char> condemned(size_t(n - root), 0);
+    inSub[0] = 1;   // root itself
+    int removed = 0;
+    for (qint32 i = root; i < n; ++i) {
+        if (i != root) {
+            const qint32 p = m_nodes[size_t(i)].parent;
+            if (p < root || !inSub[size_t(p - root)]) continue;
+            inSub[size_t(i - root)] = 1;
+            const Node &pn = m_nodes[size_t(p)];
+            const bool parentListed = (pn.pad & kListedBit)
+                && (pn.pad & kGenMask) == m_generation;
+            const bool seen = (m_nodes[size_t(i)].pad & kGenMask) == m_generation;
+            if (condemned[size_t(p - root)] || (parentListed && !seen)) {
+                condemned[size_t(i - root)] = 1;
+            }
+        }
+        if (condemned[size_t(i - root)] && (m_nodes[size_t(i)].flags & kEntry)) {
+            Node &nd = m_nodes[size_t(i)];
+            nd.flags &= ~kEntry;
+            --m_counts[(nd.flags & kKindFile) ? File : Folder];
+            ++removed;
+        }
+    }
+    return removed;
+}
+
 qint32 PathStore::addChild(qint32 parent, QByteArrayView utf8Name, Kind kind)
 {
     QWriteLocker lock(&m_lock);
@@ -132,6 +193,9 @@ PathStore::Ingest PathStore::ingestListing(qint32 dir, const QStringList &names,
     Ingest r;
     QWriteLocker lock(&m_lock);
     if (dir < 0 || size_t(dir) >= m_nodes.size()) return r;
+
+    // Mark half of mark-and-sweep: this directory was listed this generation.
+    m_nodes[size_t(dir)].pad = quint16(m_generation | kListedBit);
 
     // Existing children matter only when the dir already has some (relist /
     // overlap). Snapshot them once — never a per-entry store lookup.
@@ -152,7 +216,8 @@ PathStore::Ingest PathStore::ingestListing(qint32 dir, const QStringList &names,
         const QByteArray utf8 = name.toUtf8();
         qint32 node = existing.isEmpty() ? -1 : existing.value(utf8, -1);
         if (node >= 0 && (m_nodes[size_t(node)].flags & kEntry)) {
-            r.nodes.append(-1);                       // already cached
+            stampSeenLocked(node);                    // seen this generation
+            r.nodes.append(node);                     // return it so the walk descends
             continue;
         }
         if (cap >= 0 && m_counts[kind] >= cap) {
@@ -162,6 +227,7 @@ PathStore::Ingest PathStore::ingestListing(qint32 dir, const QStringList &names,
         }
         if (node < 0) node = appendNodeLocked(dir, utf8, kind, true);
         else makeEntryLocked(node, kind);             // re-liven tombstone/scaffold
+        stampSeenLocked(node);                        // seen this generation
         ++r.added;
         r.nodes.append(node);
     }
@@ -307,6 +373,7 @@ void PathStore::clear()
     m_names = QByteArray();
     m_counts[Folder] = 0;
     m_counts[File] = 0;
+    m_generation = 0;
     initRootLocked();
 }
 
@@ -336,6 +403,131 @@ QStringList PathStore::entries(Kind k) const
         }
     }
     return out;
+}
+
+// Snapshot layout: Header, then the node array in one write, then the name
+// arena in one write. Fixed-width fingerprint keeps the header POD; callers
+// pass an arbitrary QByteArray which is padded/truncated to kFingerprintLen
+// (SHA-256 in production — see IndexFingerprint).
+namespace {
+
+constexpr quint32 kSnapshotVersion = 1;
+constexpr int kFingerprintLen = 32;
+
+struct SnapshotHeader {
+    char magic[4];                       // 'M' 'S' 'I' 'X'
+    quint32 version;
+    char fingerprint[kFingerprintLen];
+    qint64 nodeCount;
+    qint64 namesSize;
+};
+
+void fillFingerprint(char *dst, const QByteArray &src)
+{
+    std::memset(dst, 0, kFingerprintLen);
+    std::memcpy(dst, src.constData(),
+                size_t(qMin(src.size(), qsizetype(kFingerprintLen))));
+}
+
+}  // anonymous
+
+bool PathStore::saveTo(const QString &filePath, const QByteArray &fingerprint) const
+{
+    QReadLocker lock(&m_lock);
+    const qint32 n = qint32(m_nodes.size());
+
+    // Keep a node iff it is a live entry or an ancestor of one (scaffold).
+    // Backward pass: children have higher indexes, so a kept child marks
+    // its parent before the parent is visited.
+    std::vector<char> keep(size_t(n), 0);
+    keep[0] = 1;                                        // "/" root
+    for (qint32 i = n - 1; i > 0; --i) {
+        if (keep[size_t(i)] || (m_nodes[size_t(i)].flags & kEntry)) {
+            keep[size_t(i)] = 1;
+            keep[size_t(m_nodes[size_t(i)].parent)] = 1;
+        }
+    }
+
+    // Forward pass: remap parent indexes and compact the name arena.
+    std::vector<qint32> newIdx(size_t(n), -1);
+    std::vector<Node> outNodes;
+    QByteArray outNames;
+    for (qint32 i = 0; i < n; ++i) {
+        if (!keep[size_t(i)]) continue;
+        Node nd = m_nodes[size_t(i)];
+        newIdx[size_t(i)] = qint32(outNodes.size());
+        const qint32 p = nd.parent;
+        nd.parent = (p < 0) ? -1 : newIdx[size_t(p)];
+        nd.flags &= quint8(~kHasChild);                 // recomputed below
+        nd.pad = 0;                                     // generation is in-memory only
+        const quint32 off = quint32(outNames.size());
+        outNames.append(m_names.constData() + nd.nameOff, nd.nameLen);
+        nd.nameOff = off;
+        if (nd.parent >= 0) outNodes[size_t(nd.parent)].flags |= kHasChild;
+        outNodes.push_back(nd);
+    }
+
+    SnapshotHeader hdr;
+    std::memcpy(hdr.magic, "MSIX", 4);
+    hdr.version = kSnapshotVersion;
+    fillFingerprint(hdr.fingerprint, fingerprint);
+    hdr.nodeCount = qint64(outNodes.size());
+    hdr.namesSize = outNames.size();
+
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    bool ok = file.write(reinterpret_cast<const char *>(&hdr), sizeof(hdr))
+              == qint64(sizeof(hdr));
+    ok = ok && file.write(reinterpret_cast<const char *>(outNodes.data()),
+                          qint64(outNodes.size() * sizeof(Node)))
+                   == qint64(outNodes.size() * sizeof(Node));
+    ok = ok && file.write(outNames.constData(), outNames.size())
+                   == outNames.size();
+    return ok && file.commit();
+}
+
+bool PathStore::loadFrom(const QString &filePath, const QByteArray &expectedFingerprint)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+
+    SnapshotHeader hdr;
+    if (file.read(reinterpret_cast<char *>(&hdr), sizeof(hdr))
+        != qint64(sizeof(hdr))) return false;
+    if (std::memcmp(hdr.magic, "MSIX", 4) != 0) return false;
+    if (hdr.version != kSnapshotVersion) return false;
+    char expect[kFingerprintLen];
+    fillFingerprint(expect, expectedFingerprint);
+    if (std::memcmp(hdr.fingerprint, expect, kFingerprintLen) != 0) return false;
+    if (hdr.nodeCount < 1 || hdr.namesSize < 0) return false;
+    if (file.size() != qint64(sizeof(hdr)) + hdr.nodeCount * qint64(sizeof(Node))
+                           + hdr.namesSize) return false;
+
+    // Read into locals, validate fully, then swap in — a refused snapshot
+    // never leaves the store half-loaded.
+    std::vector<Node> nodes(size_t(hdr.nodeCount));
+    if (file.read(reinterpret_cast<char *>(nodes.data()),
+                  hdr.nodeCount * qint64(sizeof(Node)))
+        != hdr.nodeCount * qint64(sizeof(Node))) return false;
+    QByteArray names = file.read(hdr.namesSize);
+    if (names.size() != hdr.namesSize) return false;
+
+    if (nodes[0].parent != -1 || nodes[0].nameLen != 0) return false;
+    int counts[2] = {0, 0};
+    for (qint64 i = 0; i < hdr.nodeCount; ++i) {
+        Node &nd = nodes[size_t(i)];
+        if (i > 0 && (nd.parent < 0 || nd.parent >= i)) return false;
+        if (qint64(nd.nameOff) + nd.nameLen > hdr.namesSize) return false;
+        nd.pad = 0;                                     // normalize generations
+        if (nd.flags & kEntry) ++counts[(nd.flags & kKindFile) ? File : Folder];
+    }
+
+    QWriteLocker lock(&m_lock);
+    m_nodes.swap(nodes);
+    m_names = names;
+    m_counts[Folder] = counts[Folder];
+    m_counts[File] = counts[File];
+    return true;
 }
 
 QStringList PathStore::search(const QString &query, Kind kind,

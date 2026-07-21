@@ -283,11 +283,12 @@ void PathStoreTest::ingestListingDedupesRelisting()
     QVERIFY(r1.nodes.at(0) >= 0 && r1.nodes.at(1) >= 0);
     const qint32 one = s.find("/dir/one");
 
-    // Re-listing: existing live entries are skipped, new ones added.
+    // Re-listing: existing live entries are not re-added but their node
+    // index is returned (the reconcile walk descends into cached trees).
     const auto r2 = s.ingestListing(d, {"one", "two", "three"}, PathStore::Folder, -1);
     QCOMPARE(r2.added, 1);
-    QCOMPARE(r2.nodes.at(0), -1);
-    QCOMPARE(r2.nodes.at(1), -1);
+    QCOMPARE(r2.nodes.at(0), one);
+    QCOMPARE(r2.nodes.at(1), s.find("/dir/two"));
     QVERIFY(r2.nodes.at(2) >= 0);
     QCOMPARE(s.count(PathStore::Folder), 4);  // /dir + three children
 
@@ -333,6 +334,269 @@ void PathStoreTest::clearResetsStore()
     QCOMPARE(s.find("/"), 0);                 // root survives
     // Store is usable again after clear.
     QVERIFY(s.addChild(0, "fresh", PathStore::Folder) > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Generation mark-and-sweep (docs/210_persistent_index.md)
+// ---------------------------------------------------------------------------
+
+void PathStoreTest::sweepTombstonesUnseenChildrenOfListedDirs()
+{
+    PathStore s;
+    const qint32 home = s.findOrCreatePath("/home", PathStore::Folder);
+    s.beginScanGeneration();
+    s.ingestListing(home, {"a", "b"}, PathStore::Folder, -1);
+    const qint32 a = s.find("/home/a");
+    const qint32 b = s.find("/home/b");
+    s.ingestListing(b, {"deep"}, PathStore::Folder, -1);
+    s.ingestListing(b, {"x.txt"}, PathStore::File, -1);
+    QCOMPARE(s.count(PathStore::Folder), 4);   // home, a, b, deep
+
+    // "b" disappears from disk; the next scan re-lists /home without it.
+    s.beginScanGeneration();
+    s.ingestListing(home, {"a"}, PathStore::Folder, -1);
+    const int removed = s.sweepStale(home);
+
+    QCOMPARE(removed, 3);                      // b + its subtree (deep, x.txt)
+    QVERIFY(!s.isEntry(b));
+    QVERIFY(!s.isEntry(s.find("/home/b/deep")));
+    QVERIFY(s.isEntry(a, PathStore::Folder));  // seen this generation
+    QVERIFY(s.isEntry(home));                  // the root itself is never swept
+    QCOMPARE(s.count(PathStore::Folder), 2);
+    QCOMPARE(s.count(PathStore::File), 0);
+}
+
+void PathStoreTest::sweepSparesChildrenOfUnlistedParents()
+{
+    // THE skipped-subtree hazard (docs/210 review): a home scan skips
+    // subtrees already covered by an earlier root (e.g. Desktop). A naive
+    // "sweep everything not seen this generation" would tombstone all of
+    // Desktop. The parent-was-listed rule must leave it untouched.
+    PathStore s;
+    const qint32 home = s.findOrCreatePath("/home", PathStore::Folder);
+
+    // Earlier scan: Desktop was its own root, fully listed.
+    s.beginScanGeneration();
+    const qint32 desktop = s.findOrCreatePath("/home/Desktop", PathStore::Folder);
+    s.ingestListing(desktop, {"keep-me", "me-too"}, PathStore::Folder, -1);
+
+    // Later scan: /home is listed (Desktop is SEEN as a child), but the
+    // Desktop subtree itself is skipped — never listed this generation.
+    s.beginScanGeneration();
+    s.ingestListing(home, {"Desktop"}, PathStore::Folder, -1);
+    const int removed = s.sweepStale(home);
+
+    QCOMPARE(removed, 0);
+    QVERIFY(s.isEntry(s.find("/home/Desktop/keep-me"), PathStore::Folder));
+    QVERIFY(s.isEntry(s.find("/home/Desktop/me-too"), PathStore::Folder));
+}
+
+void PathStoreTest::sweepLeavesStampedViaParentListingSurvive()
+{
+    // Bundles and symlinked dirs appear in their parent's listing (stamped
+    // like any child) but are never listed themselves — so neither they nor
+    // anything cached beneath them is ever swept.
+    PathStore s;
+    const qint32 dir = s.findOrCreatePath("/dir", PathStore::Folder);
+    s.beginScanGeneration();
+    s.ingestListing(dir, {"App.app", "link"}, PathStore::Folder, -1);
+    const qint32 link = s.find("/dir/link");
+    s.ingestListing(link, {"inner"}, PathStore::Folder, -1);  // e.g. via watcher
+
+    s.beginScanGeneration();
+    s.ingestListing(dir, {"App.app", "link"}, PathStore::Folder, -1);
+    QCOMPARE(s.sweepStale(dir), 0);
+    QVERIFY(s.isEntry(s.find("/dir/App.app"), PathStore::Folder));
+    QVERIFY(s.isEntry(s.find("/dir/link/inner"), PathStore::Folder));
+}
+
+void PathStoreTest::generationWrapKeepsSweepSafe()
+{
+    PathStore s;
+    const qint32 dir = s.findOrCreatePath("/dir", PathStore::Folder);
+    s.beginScanGeneration();
+    s.ingestListing(dir, {"stays", "goes"}, PathStore::Folder, -1);
+
+    // Exhaust the 15-bit space to force a wrap; all node generations must
+    // normalize so no stale value can ever alias the fresh generation.
+    for (int i = 0; i < 0x8000; ++i) s.beginScanGeneration();
+
+    s.ingestListing(dir, {"stays"}, PathStore::Folder, -1);
+    QCOMPARE(s.sweepStale(dir), 1);
+    QVERIFY(s.isEntry(s.find("/dir/stays"), PathStore::Folder));
+    QVERIFY(!s.isEntry(s.find("/dir/goes")));
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot save/load (docs/210_persistent_index.md)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const QByteArray kTestFingerprint = QByteArrayLiteral("test-fingerprint-v1");
+
+// Realistic-ish fixture: folders, files, non-ASCII names, a scaffold chain.
+void seedStore(PathStore &s)
+{
+    s.findOrCreatePath("/home/projects", PathStore::Folder);
+    s.findOrCreatePath("/home/projects/app", PathStore::Folder);
+    s.findOrCreatePath("/home/projects/app/README.md", PathStore::File);
+    s.findOrCreatePath("/home/projects/app/main.cpp", PathStore::File);
+    s.findOrCreatePath(QString::fromUtf8("/home/Büro/Café-Liste.pdf"),
+                       PathStore::File);
+    s.findOrCreatePath("/home/notes.txt", PathStore::File);
+}
+
+}  // anonymous
+
+void PathStoreTest::saveLoadRoundtripPreservesStore()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+
+    QCOMPARE(t.count(PathStore::Folder), s.count(PathStore::Folder));
+    QCOMPARE(t.count(PathStore::File), s.count(PathStore::File));
+    QCOMPARE(t.entries(PathStore::Folder), s.entries(PathStore::Folder));
+    QCOMPARE(t.entries(PathStore::File), s.entries(PathStore::File));
+    // Kinds survive; scaffold segments stay scaffold.
+    QVERIFY(t.isEntry(t.find("/home/projects"), PathStore::Folder));
+    QVERIFY(!t.isEntry(t.find("/home")));
+    // Search works on the loaded store, including non-ASCII.
+    QCOMPARE(t.search("readme", PathStore::File, QString(), 100),
+             QStringList{QStringLiteral("/home/projects/app/README.md")});
+    QCOMPARE(t.search(QString::fromUtf8("büro"), PathStore::File, QString(), 100),
+             QStringList{QString::fromUtf8("/home/Büro/Café-Liste.pdf")});
+    // The loaded store accepts new entries.
+    QVERIFY(t.findOrCreatePath("/home/new.txt", PathStore::File) > 0);
+}
+
+void PathStoreTest::saveDropsTombstonedNodes()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    s.markDeletedRecursive(s.find("/home/projects/app"));
+    const int folders = s.count(PathStore::Folder);
+    const int files = s.count(PathStore::File);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::Folder), folders);
+    QCOMPARE(t.count(PathStore::File), files);
+    // Tombstoned subtree is physically gone, not just flagged.
+    QCOMPARE(t.find("/home/projects/app"), -1);
+    QCOMPARE(t.find("/home/projects/app/README.md"), -1);
+    // Scaffold ancestors of live entries survive the drop.
+    QVERIFY(t.find("/home/projects") >= 0);
+    QCOMPARE(t.search("notes", PathStore::File, QString(), 100),
+             QStringList{QStringLiteral("/home/notes.txt")});
+}
+
+void PathStoreTest::loadRefusesWrongFingerprint()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    PathStore t;
+    QVERIFY(!t.loadFrom(file, QByteArrayLiteral("different-fingerprint")));
+    // Refusal leaves the store empty and usable.
+    QCOMPARE(t.count(PathStore::Folder), 0);
+    QCOMPARE(t.count(PathStore::File), 0);
+    QVERIFY(t.addChild(0, "fresh", PathStore::Folder) > 0);
+}
+
+void PathStoreTest::loadRefusesTruncatedFile()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::ReadWrite));
+    QVERIFY(f.resize(f.size() - 7));
+    f.close();
+
+    PathStore t;
+    QVERIFY(!t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::File), 0);
+}
+
+void PathStoreTest::loadRefusesGarbage()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("this is not a snapshot at all, not even close");
+    f.close();
+
+    PathStore t;
+    QVERIFY(!t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::File), 0);
+    // Missing file refuses too.
+    QVERIFY(!t.loadFrom(tmp.path() + "/missing.bin", kTestFingerprint));
+}
+
+void PathStoreTest::snapshotTiming100k()
+{
+    // Not a gate — reports save/load wall time for a 100k-entry store so
+    // regressions surface in the test log (concept gate: ≤ 1 s for 2 M).
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    QList<qint32> dirs;
+    for (int i = 0; i < 100; ++i) {
+        const qint32 top = s.addChild(0, QString("dir-%1").arg(i).toUtf8(),
+                                      PathStore::Folder);
+        for (int j = 0; j < 40; ++j) {
+            dirs.append(s.addChild(top, QString("sub-%1").arg(j).toUtf8(),
+                                   PathStore::Folder));
+        }
+    }
+    int entries = 100 + dirs.size();
+    for (int i = 0; entries < 100'000; ++i, ++entries) {
+        s.addChild(dirs.at(i % dirs.size()),
+                   QString("file-%1.txt").arg(i).toUtf8(), PathStore::File);
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+    const qint64 saveMs = timer.restart();
+
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+    const qint64 loadMs = timer.elapsed();
+
+    QCOMPARE(t.count(PathStore::File), s.count(PathStore::File));
+    qInfo("snapshot 100k entries: save %lld ms, load %lld ms, %lld KB",
+          saveMs, loadMs, QFileInfo(file).size() / 1024);
+    QVERIFY(saveMs < 2000);
+    QVERIFY(loadMs < 2000);
 }
 
 // ---------------------------------------------------------------------------

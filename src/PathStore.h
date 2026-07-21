@@ -43,15 +43,29 @@ public:
     qint32 addChild(qint32 parent, QByteArrayView utf8Name, Kind kind);
 
     // Atomically ingest one directory listing (the scan hot path). Names
-    // already present under `dir` as live entries are skipped (-1 in
-    // `nodes`); tombstoned or scaffold ones are (re)livened. Stops adding
-    // once count(kind) reaches `cap` (cap < 0 = unbounded).
+    // already present under `dir` as live entries keep their node (not
+    // re-added, but returned so the walk can descend); tombstoned or
+    // scaffold ones are (re)livened. Stops adding once count(kind) reaches
+    // `cap` (cap < 0 = unbounded). Stamps the current scan generation on
+    // `dir` (with the *listed* bit) and on every seen child — the mark half
+    // of the mark-and-sweep reconciliation (docs/210_persistent_index.md).
     struct Ingest {
-        QList<qint32> nodes;   // per name: node index, or -1 (skipped/blocked)
+        QList<qint32> nodes;   // per name: node index, or -1 (cap-blocked)
         int added = 0;         // names that became live entries
         bool capHit = false;
     };
     Ingest ingestListing(qint32 dir, const QStringList &names, Kind kind, int cap);
+
+    // Mark-and-sweep reconciliation (docs/210_persistent_index.md).
+    // beginScanGeneration() opens a fresh generation before a scan run;
+    // 15-bit space, wraps by normalizing every node back to generation 0 so
+    // a stale value can never alias the fresh one. sweepStale() tombstones
+    // exactly those entries under `root` whose parent was listed this
+    // generation but which were not seen in that listing (plus their
+    // subtrees) — never touching children of parents that were skipped this
+    // run. Returns the number of entries tombstoned.
+    void beginScanGeneration();
+    int sweepStale(qint32 root);
 
     // Walk/create nodes along absPath; the final node becomes a live entry
     // of `kind` (subject to `cap`). Rare path — roots, watcher, public adds.
@@ -81,6 +95,15 @@ public:
     qint64 bytesUsed() const;                     // exact accounting (G1 gate)
     QStringList entries(Kind k) const;            // live paths, insertion order
 
+    // Snapshot persistence (docs/210_persistent_index.md). Raw-blob format:
+    // MSIX magic, version, fingerprint, counts, node array + name arena as
+    // one write each. saveTo() writes live nodes only (tombstones dropped,
+    // parent indexes remapped) via QSaveFile — a crash never corrupts an
+    // existing snapshot. loadFrom() refuses on any mismatch or corruption
+    // and leaves the store unchanged; the snapshot is a pure accelerator.
+    bool saveTo(const QString &filePath, const QByteArray &fingerprint) const;
+    bool loadFrom(const QString &filePath, const QByteArray &expectedFingerprint);
+
     // Search: every term must appear case-insensitively in SOME segment of
     // the path (ancestor names count). Whitespace and '/' both split terms.
     QStringList search(const QString &query, Kind kind,
@@ -99,8 +122,14 @@ private:
     static constexpr quint8 kNonAscii = 4;   // name needs Unicode-aware matching
     static constexpr quint8 kHasChild = 8;   // dedupe hint for ingestListing
 
+    // Generation bits packed into Node::pad: low 15 = scan generation,
+    // high bit = "this dir was listed this generation" (docs/210).
+    static constexpr quint16 kGenMask   = 0x7FFF;
+    static constexpr quint16 kListedBit = 0x8000;
+
     qint32 appendNodeLocked(qint32 parent, QByteArrayView utf8Name, Kind kind,
                             bool asEntry);
+    void stampSeenLocked(qint32 node);   // mark node seen in the current gen
     qint32 childByNameLocked(qint32 parent, QByteArrayView utf8Name) const;
     qint32 walkLocked(const QString &absPath, bool create);
     QString pathOfLocked(qint32 node) const;
@@ -110,6 +139,7 @@ private:
     std::vector<Node> m_nodes;
     QByteArray        m_names;          // ONE arena: concatenated UTF-8 names
     int               m_counts[2] = {0, 0};
+    quint16           m_generation = 0; // current scan generation (mark-and-sweep)
     mutable QReadWriteLock m_lock;
 };
 

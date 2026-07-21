@@ -38,6 +38,17 @@ Exits with the test runner's status. 60 tests at the time of writing
     ./scripts/screenshot.sh trafo-results
     ./scripts/ui-drive.sh quit
 
+## Persistent index snapshot
+
+The cache warm-starts from a snapshot written to
+`~/.macos-search/index-v1.bin` (see `docs/210_persistent_index.md`). It
+is saved after each completed scan root and on quit, and loaded at
+startup before scanning. It's a pure accelerator — **deleting it is
+always safe** (the next launch cold-scans). A change to the exclude
+patterns or cap values changes the fingerprint, so a stale snapshot is
+ignored automatically. `--bench` also writes it (harmless); trash it if a
+bench run left temp-tree paths behind: `trash ~/.macos-search/index-v1.bin`.
+
 ### D. Crash / log inspection
 
     ./br --detach --log=/tmp/macos-search.log
