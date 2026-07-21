@@ -150,6 +150,8 @@ int main(int argc, char *argv[])
 
     QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
         PathCacheManager::instance()->stopScan();
+        // Persist the freshest index for the next warm start (docs/210).
+        PathCacheManager::instance()->saveSnapshot();
     });
 
     // Window title is hotkey-aware: when ⌃⌥⇧S is enabled we surface that
@@ -211,6 +213,12 @@ int main(int argc, char *argv[])
                          else hotkey->unregisterSummonChord();
                          dialog.setWindowTitle(titleForHotkey(enabled));
                      });
+
+    // Warm start (docs/210): load the last index snapshot before any scan
+    // runs. On a fingerprint match the store is instantly searchable; the
+    // pre-scan below then reconciles it against the current filesystem. A
+    // miss (or first run) is harmless — the scan builds from cold as before.
+    PathCacheManager::tryLoadSnapshot();
 
     // Pre-scan the user's favorites in priority order. Each `scanComplete`
     // triggers the next path via `expandTo()`. See docs/todos.md TODO 3.

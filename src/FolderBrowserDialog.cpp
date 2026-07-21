@@ -1249,6 +1249,11 @@ void FolderBrowserDialog::updateCacheStatusLabel()
     if (cache->isScanning()) {
         m_cacheStatusLabel->setText(tr("Indexing… %1").arg(counts));
         m_cacheStatusLabel->setStyleSheet("color: #e67e22; font-size: 11px;");
+    } else if (cache->loadedFromSnapshot()) {
+        // Warm start (docs/210): searchable immediately from the cached
+        // index while the background rescan reconciles it against disk.
+        m_cacheStatusLabel->setText(tr("Ready (cached) — %1 · verifying…").arg(counts));
+        m_cacheStatusLabel->setStyleSheet("color: #27ae60; font-size: 11px;");
     } else {
         m_cacheStatusLabel->setText(tr("Ready — %1").arg(counts));
         m_cacheStatusLabel->setStyleSheet("color: #27ae60; font-size: 11px;");

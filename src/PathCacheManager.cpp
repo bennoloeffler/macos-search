@@ -1,7 +1,9 @@
 #include "PathCacheManager.h"
 #include "ExcludeSettings.h"
 #include "FileCacheManager.h"
+#include "MaudeConfig.h"
 #include "PathStore.h"
+#include <QCryptographicHash>
 #include <QDir>
 #include <QHash>
 #include <QFileSystemWatcher>
@@ -289,6 +291,9 @@ void PathCacheManager::restartScanFrom(const QString &rootPath)
             return;
         }
 
+        // Fresh generation for this scan run (docs/210 mark-and-sweep).
+        m_store->beginScanGeneration();
+
         // Add the root path to cache first
         const qint32 rootNode = addPathToCache(normalizedRoot);
 
@@ -407,6 +412,9 @@ void PathCacheManager::expandTo(const QString &rootPath)
             m_scanning.storeRelease(0);
             return;
         }
+
+        // Fresh generation for this scan run (docs/210 mark-and-sweep).
+        m_store->beginScanGeneration();
 
         // Add the root path to cache first
         const qint32 rootNode = addPathToCache(normalizedRoot);
@@ -875,6 +883,10 @@ void PathCacheManager::performScan()
 {
     QString homeDir = QDir::homePath();
 
+    // Open a fresh generation for this scan run — every ingestListing below
+    // stamps it, and finishScan sweeps against it (docs/210).
+    m_store->beginScanGeneration();
+
     // Initialize queue with home directory (scaffold node — the home dir
     // itself is not a cache entry, matching the original behavior).
     const qint32 homeNode = m_store->ensurePath(homeDir);
@@ -936,6 +948,16 @@ void PathCacheManager::finishScan(const QString &completedRoot, QThread *progres
     // Only mark as complete if we weren't stopped
     const bool wasStopped = m_stopRequested.loadAcquire() != 0;
 
+    // Workers are done. Reconcile deletions BEFORE advertising the scan as
+    // finished (docs/210): tombstone entries whose parent was re-listed this
+    // generation but which vanished from disk, so no searcher (or test
+    // polling isScanning()) ever observes the un-swept, stale state. On a
+    // cold scan nothing is stale — a cheap no-op walk.
+    if (!wasStopped) {
+        const qint32 rootNode = m_store->find(completedRoot);
+        if (rootNode >= 0) m_store->sweepStale(rootNode);
+    }
+
     m_scanning.storeRelease(0);
 
     progressThread->wait();
@@ -949,10 +971,17 @@ void PathCacheManager::finishScan(const QString &completedRoot, QThread *progres
         m_completedRoots.insert(completedRoot);
     }
 
+    // Reconciliation for the first post-warm-start scan is done: drop the
+    // "verifying…" flag so the UI shows plain "Ready".
+    m_loadedFromSnapshot.storeRelease(0);
+
     // The BFS churns through millions of transient allocations (entryList
     // QStrings, queue nodes). Ask malloc to hand freed pages back to the OS
     // so RSS drops to the live cache size after the scan.
     malloc_zone_pressure_relief(nullptr, 0);
+
+    // Persist the reconciled index for the next warm start.
+    saveSnapshot();
 
     const int indexed = m_foldersIndexed.loadAcquire();
     const int excluded = m_foldersExcluded.loadAcquire();
@@ -962,4 +991,66 @@ void PathCacheManager::finishScan(const QString &completedRoot, QThread *progres
         emit scanComplete(indexed, excluded);
         emit cacheUpdated();
     }, Qt::QueuedConnection);
+}
+
+// Snapshot warm-start (docs/210_persistent_index.md) --------------------------
+
+static QString snapshotPath()
+{
+    return MaudeConfig::configDir() + QStringLiteral("/index-v1.bin");
+}
+
+QByteArray PathCacheManager::indexFingerprint() const
+{
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    const auto feed = [&h](const QByteArray &b) {
+        h.addData(b);
+        h.addData(QByteArrayLiteral("\x1f"));   // unit separator — no collisions
+    };
+
+    feed(QByteArrayLiteral("macos-search-index-v")
+         + QByteArray::number(kIndexFormatVersion));
+
+    // Enabled exclude patterns (folder + file), sorted for order-independence.
+    if (m_excludeSettings) {
+        QStringList folders = m_excludeSettings->enabledPatterns();
+        folders.sort();
+        for (const QString &p : folders) feed(p.toUtf8());
+        feed(QByteArrayLiteral("|files|"));
+        QStringList files = m_excludeSettings->enabledFilePatterns();
+        files.sort();
+        for (const QString &p : files) feed(p.toUtf8());
+    }
+
+    // Path-level excludes (fixed order, and includes $HOME-based entries).
+    feed(QByteArrayLiteral("|paths|"));
+    for (const QString &p : pathLevelExcludes()) feed(p.toUtf8());
+
+    // Both caches' soft caps + hard ceilings.
+    feed(QByteArrayLiteral("|caps|"));
+    feed(QByteArray::number(m_softCap.loadAcquire()));
+    feed(QByteArray::number(m_hardCeiling.loadAcquire()));
+    FileCacheManager *fc = FileCacheManager::instance();
+    feed(QByteArray::number(fc->softCap()));
+    feed(QByteArray::number(fc->hardCeiling()));
+
+    return h.result();
+}
+
+void PathCacheManager::saveSnapshot() const
+{
+    // mkpath so a first-ever run (or a bench with no ~/.macos-search) never
+    // fails the write. QSaveFile inside saveTo() keeps the write atomic.
+    QDir().mkpath(MaudeConfig::configDir());
+    m_store->saveTo(snapshotPath(), indexFingerprint());
+}
+
+bool PathCacheManager::tryLoadSnapshot()
+{
+    PathCacheManager *self = instance();
+    if (!PathStore::shared()->loadFrom(snapshotPath(), self->indexFingerprint()))
+        return false;
+    self->m_loadedFromSnapshot.storeRelease(1);
+    emit self->cacheUpdated();
+    return true;
 }

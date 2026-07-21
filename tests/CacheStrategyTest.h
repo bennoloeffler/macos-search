@@ -56,6 +56,15 @@ private slots:
     void folderSoftCapEmitsSignalOnce();
     void expandToUserBumpsFolderSoftCap();
     void expandToUserBumpsFileSoftCap();
+
+    // Persistent-index warm start + reconciliation (docs/210). The
+    // fingerprint must change when any ingredient changes; a saved snapshot
+    // must reconcile against filesystem changes on the next rescan.
+    void indexFingerprintReflectsIngredients();
+    void snapshotRoundtripThroughScan();
+    void snapshotDeletionReconciledOnRescan();
+    void snapshotAdditionReconciledOnRescan();
+    void snapshotSkippedSubtreeSurvivesRescan();
 };
 
 #endif // CACHESTRATEGYTEST_H
