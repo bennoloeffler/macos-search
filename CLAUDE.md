@@ -170,3 +170,24 @@ scripts/                   br.sh, screenshot.sh, ui-drive.sh
 
   Output is in `screenshots/`. Keystroke synthesis needs macOS
   Accessibility for the parent terminal.
+
+## Release & operations (added 2026-07-23)
+
+- **Deploy:** `scripts/deploy.sh` builds Release, embeds Qt, signs with the
+  STABLE self-signed identity **"macos-search Benno Loeffler"** (so macOS TCC
+  folder grants persist across rebuilds — ad-hoc signing re-prompts every
+  build), installs to `/Applications`, and launches. `--no-launch`,
+  `--reset-tcc` flags. One-time cert setup is documented at the top of the
+  script.
+- **Dropbox release location** (internal V&S distribution):
+  `VundS Dropbox/VundS/B_Org Shop/B_05_IT/B_525_KI/macos-search-releases/` —
+  one `macos-search-<version>[-date]/` folder per build with `macos-search.app`,
+  a `.zip`, and a `README.md` install guide (right-click → Open on first run;
+  allow Desktop/Downloads/Documents once).
+- **Self-reflection health log:** the app runs `HealthMonitor` (a main-thread
+  heartbeat + an independent background logger) writing `~/.macos-search/health.log`
+  every second: memory, thread count, scan state, counts, and main-thread stall
+  status. On a main-thread stall (>3 s) it auto-dumps a `sample` of the frozen
+  stack to `~/.macos-search/health-stall-*.txt`. **To debug a freeze, read those
+  files** — a stalled `main=STALLED` line + the stall sample pinpoint the hang
+  (that's how the FSEvents `indexNewSubtree` main-thread hang was found).
