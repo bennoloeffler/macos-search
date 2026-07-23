@@ -579,16 +579,16 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
     // enqueues the walk (or starts one) without clearing the cache; it no-ops
     // if the subtree is already covered.
     for (const QString &entry : currentEntries) {
-        if (m_excludeSettings && m_excludeSettings->shouldExclude(entry)) {
-            continue;
-        }
         if (cachedFolders.contains(entry)) continue;
         const QString childPath = prefix + entry;
-        addPathToCache(childPath);
-        // Opaque bundles (.app, .photoslibrary) are cached as a single leaf,
-        // never walked — walking a freshly-dropped .app (hundreds of Qt
-        // framework files) on the main thread froze the UI.
-        if (isOpaqueBundle(entry)) continue;
+        addPathToCache(childPath);               // folder name is indexed
+        // Cache the name but DON'T descend for: opaque bundles (.app), and
+        // name-excluded dirs (node_modules, build, …) — index the name, not
+        // the contents. Walking a freshly-dropped .app on the main thread
+        // also once froze the UI.
+        if (isOpaqueBundle(entry)
+            || (m_excludeSettings && m_excludeSettings->shouldExclude(entry)))
+            continue;
         // Walk its subtree on a BACKGROUND thread — FSEvents delivers
         // descendant events out of order, and a big new directory must never
         // block the UI (see scheduleSubtreeIndex).
@@ -845,25 +845,27 @@ void PathCacheManager::scanWorker()
         const QSet<QString> pathExcluded = pathLevelExcludedChildren(currentPath);
 
         QStringList newNames;
-        // Symlinked directories are cached (selectable in the picker) but
-        // NEVER descended: following them walks linked trees twice
-        // (~/Dropbox → ~/VundS Dropbox) and loops forever on a link that
-        // points at an ancestor.
-        QSet<QString> symlinkNames;
+        // Names cached as a selectable LEAF but NEVER descended into:
+        //   - symlinks (following them walks linked trees twice / loops), and
+        //   - name-pattern-excluded dirs (node_modules, build, target, .git,
+        //     dist, …). The user's rule: index the FOLDER NAME so it's findable
+        //     ("find the build folder"), but don't index its binary/build
+        //     contents. Path-level excludes (/System, /usr, ~/Library) are a
+        //     different beast — dropped entirely, not even the name.
+        QSet<QString> noDescendNames;
         for (const QFileInfo &info : folderEntries) {
             if (m_stopRequested.loadAcquire()) {
                 break;
             }
             const QString entry = info.fileName();
-            // Name-pattern exclusions (user-configurable list) + the
-            // path-level excludes that land exactly at this directory.
-            if ((m_excludeSettings && m_excludeSettings->shouldExclude(entry))
-                || pathExcluded.contains(entry)) {
+            if (pathExcluded.contains(entry)) {   // /System, /usr, ~/Library …
                 m_foldersExcluded.fetchAndAddRelaxed(1);
-                continue;
+                continue;                         // no name, no contents
             }
-            if (info.isSymLink()) symlinkNames.insert(entry);
-            newNames.append(entry);
+            const bool nameExcluded =
+                m_excludeSettings && m_excludeSettings->shouldExclude(entry);
+            if (info.isSymLink() || nameExcluded) noDescendNames.insert(entry);
+            newNames.append(entry);               // name is indexed either way
         }
 
         // One atomic batch per directory — no per-entry path strings, no
@@ -923,7 +925,7 @@ void PathCacheManager::scanWorker()
             for (qsizetype i = 0; i < res.nodes.size(); ++i) {
                 const qint32 node = res.nodes.at(i);
                 if (node < 0 || isOpaqueBundle(newNames.at(i))
-                    || symlinkNames.contains(newNames.at(i))) continue;
+                    || noDescendNames.contains(newNames.at(i))) continue;
                 m_scanQueue.enqueue({currentPath + "/" + newNames.at(i), node});
                 queued = true;
             }
@@ -1100,12 +1102,14 @@ void PathCacheManager::indexNewSubtree(const QString &dirPath)
         | QDir::NoSymLinks);
     for (const QFileInfo &info : subs) {
         const QString name = info.fileName();
-        if (m_excludeSettings && m_excludeSettings->shouldExclude(name)) continue;
         const QString full = dirPath + "/" + name;
-        if (isPathLevelExcluded(full)) continue;
-        addPathToCache(full);
-        // Symlinked dirs and opaque bundles are cached but never descended.
-        if (info.isSymLink() || isOpaqueBundle(name)) continue;
+        if (isPathLevelExcluded(full)) continue;   // /System … — drop entirely
+        addPathToCache(full);                        // folder name is indexed
+        // Symlinks, opaque bundles, and name-excluded dirs (node_modules,
+        // build, …): index the name but never descend into the contents.
+        const bool nameExcluded =
+            m_excludeSettings && m_excludeSettings->shouldExclude(name);
+        if (info.isSymLink() || isOpaqueBundle(name) || nameExcluded) continue;
         toRecurse.append(full);
     }
 

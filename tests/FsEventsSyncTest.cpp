@@ -200,17 +200,19 @@ void FsEventsSyncTest::testRenameDirSubtreeFollows()
     QTRY_VERIFY_WITH_TIMEOUT(!cache->cachedPaths().contains(root + "/oldname/inner"), 10000);
 }
 
-void FsEventsSyncTest::testExcludedDirStaysOut()
+void FsEventsSyncTest::testExcludedDirNameIndexedButNotDescended()
 {
     const QString root = testRoot();
     auto *cache = PathCacheManager::instance();
     scanRoot(cache, root);
 
-    QVERIFY(QDir(root).mkpath("node_modules/pkg"));
-    // Give FSEvents ample time to deliver, then assert it never got indexed.
-    QTest::qWait(2500);
-    QVERIFY(!cache->cachedPaths().contains(root + "/node_modules"));
+    QVERIFY(QDir(root).mkpath("node_modules/pkg/deep"));
+    // The excluded dir's NAME is indexed (findable), but its CONTENTS are not
+    // descended — index the folder, not the binary/build tree inside it.
+    QTRY_VERIFY_WITH_TIMEOUT(cache->cachedPaths().contains(root + "/node_modules"), 10000);
+    QTest::qWait(500);
     QVERIFY(!cache->cachedPaths().contains(root + "/node_modules/pkg"));
+    QVERIFY(!cache->cachedPaths().contains(root + "/node_modules/pkg/deep"));
 }
 
 void FsEventsSyncTest::testUntrackedEventIsIgnored()

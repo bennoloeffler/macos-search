@@ -28,7 +28,7 @@ private slots:
     void testCreateDirAppears();
     void testCreateDeepTreeAppears();
     void testRenameDirSubtreeFollows();
-    void testExcludedDirStaysOut();
+    void testExcludedDirNameIndexedButNotDescended();
     void testUntrackedEventIsIgnored();
 };
 
