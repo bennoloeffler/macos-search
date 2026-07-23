@@ -107,7 +107,29 @@ regressions):**
   should be ~40 B/entry. A climb means duplicate entries (e.g. macOS firmlink
   paths `/System/Volumes/Data/...` mirroring `/Applications`, `/Users`).
 - **Huge/cryptic dirs indexed**: dirs with 10k+ entries (caches, git objects)
-  are skipped by the entry-count heuristic; if they appear, that guard broke.
+  are skipped by the entry-count heuristic (`maxDirChildren`, default 10'000,
+  resets every launch); if they appear, that guard broke.
+- **"…would like to access data from other apps" (AppData TCC) prompt + scan
+  stuck on "Indexing…"**: a scan worker reached `~/Library/Containers/<app>` and
+  blocked in `opendir()` on the modal, so the active-worker count never hit zero
+  and `finishScan` never ran (`main=ok` the whole time — the UI was fine). Root
+  cause was a **leading double slash**: scanning the "Macintosh HD" (`/`)
+  favorite built `//Users/...`, and every single-slash path-level exclude then
+  failed to match, so `~/Library` was walked. Fixed by the root-aware
+  `joinPath()`. To catch a regression, run the app with `MSEARCH_TRACE_SCAN=1`
+  and watch stderr — the LAST `SCAN <path>` line before it hangs is the culprit
+  dir (this is how it was found):
+
+  ```
+  MSEARCH_TRACE_SCAN=1 /Applications/macos-search.app/Contents/MacOS/macos-search 2>&1 | grep '^SCAN '
+  ```
+
+  Invariant now regression-locked by `rootScanNeverProducesDoubleSlash` — no
+  cached path may start with `//`.
+
+Note: `sample <pid>` and `lldb -p` themselves pop a **"Developer Tools Access"**
+password prompt (macOS debug entitlement) — that's the diagnostic tool, NOT the
+app under test. Don't confuse it with an app-triggered TCC dialog.
 
 ---
 
