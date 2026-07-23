@@ -6,6 +6,7 @@
 #include "GlobalHotkey.h"
 #include "PathCacheManager.h"
 #include "ScanQueue.h"
+#include "HealthMonitor.h"
 #include "ThemeManager.h"
 
 #include <QApplication>
@@ -145,10 +146,16 @@ int main(int argc, char *argv[])
 
     ThemeManager::instance()->initialize();
 
+    // Always-on self-reflection: heartbeat + background logger to
+    // ~/.macos-search/health.log, with a `sample` dump on any main-thread
+    // stall — so a future freeze is debuggable from disk.
+    HealthMonitor::instance()->start();
+
     auto *excludeSettings = new ExcludeSettings(&app);
     PathCacheManager::instance()->setExcludeSettings(excludeSettings);
 
     QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
+        HealthMonitor::instance()->stop();
         PathCacheManager::instance()->stopScan();
         // Persist the freshest index for the next warm start (docs/210).
         PathCacheManager::instance()->saveSnapshot();

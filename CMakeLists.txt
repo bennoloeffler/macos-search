@@ -60,6 +60,8 @@ set(MACOS_SEARCH_LIB_SOURCES
 src/ScanQueue.h
 src/FsEventsWatcher.cpp
 src/FsEventsWatcher.h
+src/HealthMonitor.cpp
+src/HealthMonitor.h
     src/Bench.h
     src/SearchResultDelegate.cpp
     src/SearchResultDelegate.h
