@@ -172,6 +172,18 @@ int main(int argc, char *argv[])
     const bool hotkeyEnabledInitial = QSettings("Maude", "FolderBrowser")
         .value("hotkeyEnabled", true).toBool();
 
+    // Warm start (docs/210): load the last index snapshot BEFORE the dialog is
+    // constructed. This ordering is load-bearing: the dialog constructor
+    // navigates to its initial path, which calls expandTo(initialDir) and can
+    // START A BACKGROUND SCAN. If that scan begins on the empty store and then
+    // loadFrom() swaps the whole node vector in underneath it, the running scan
+    // keeps stale node indices and re-adds every child it walks — the index
+    // then inflates by ~70% on every warm start (the "counts MORE on restart"
+    // bug). Loading first means the store is already populated, so the dialog's
+    // expandTo(home) finds home present and no-ops, and the reconcile below runs
+    // cleanly against the intact tree.
+    PathCacheManager::tryLoadSnapshot();
+
     // Open the dialog at the resolved default start path. If the user has
     // marked a favorite as default that's where we open; otherwise $HOME.
     FolderBrowserDialog dialog(FolderBrowserDialog::resolveDefaultStartPath(),
@@ -212,11 +224,8 @@ int main(int argc, char *argv[])
                          dialog.setWindowTitle(titleForHotkey(enabled));
                      });
 
-    // Warm start (docs/210): load the last index snapshot before any scan
-    // runs. On a fingerprint match the store is instantly searchable; the
-    // pre-scan below then reconciles it against the current filesystem. A
-    // miss (or first run) is harmless — the scan builds from cold as before.
-    PathCacheManager::tryLoadSnapshot();
+    // (Snapshot warm-start happens above, before the dialog is constructed —
+    // see the ordering note there. Loading here would race the dialog's scan.)
 
     // Pre-scan the user's favorites in priority order. Each `scanComplete`
     // triggers the next path via `expandTo()`. See docs/todos.md TODO 3.

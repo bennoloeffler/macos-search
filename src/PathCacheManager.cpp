@@ -911,6 +911,9 @@ void PathCacheManager::scanWorker()
         if (res.added > 0) {
             m_foldersIndexed.fetchAndAddRelaxed(res.added);
         }
+        if (res.added > 0 && qEnvironmentVariableIsSet("MSEARCH_TRACE_SCAN"))
+            fprintf(stderr, "ADD %d node=%d %s\n", res.added, currentNode,
+                    currentPath.toUtf8().constData());
         if (res.capHit) {
             if (m_store->count(PathStore::Folder) >= hard) {
                 if (!m_ceilingReached.loadAcquire()) {
@@ -1223,8 +1226,29 @@ void PathCacheManager::saveSnapshot() const
 bool PathCacheManager::tryLoadSnapshot()
 {
     PathCacheManager *self = instance();
+    // Never load while a scan mutates the store: loadFrom() swaps the whole
+    // node vector, and a running scan would keep stale indices and duplicate.
+    // (The call site loads before any scan starts; this is belt + braces.)
+    self->stopScan();
     if (!PathStore::shared()->loadFrom(snapshotPath(), self->indexFingerprint()))
         return false;
+
+    // Self-heal contaminated snapshots. An earlier build (the '//'-path
+    // exclude-bypass bug) indexed entries UNDER path-level-excluded roots
+    // (~/Library/Containers, /System, /usr, …). A reconcile can NEVER remove
+    // them: their excluded parent is never re-listed, and sweepStale only
+    // condemns children of listed parents — so they persist and the counter
+    // climbs on every restart (the "why does it count MORE?" bug). Drop every
+    // excluded subtree here, on load. No-op for a clean snapshot (nodes absent).
+    // Legit carve-outs (e.g. /System/Applications) are scan roots and get
+    // re-added by the reconcile that follows, so purging their excluded parent
+    // is safe.
+    int purged = 0;
+    for (const QString &ex : pathLevelExcludes()) {
+        const qint32 node = self->m_store->find(ex);
+        if (node >= 0) purged += self->m_store->markDeletedRecursive(node);
+    }
+
     self->m_loadedFromSnapshot.storeRelease(1);
     emit self->cacheUpdated();
     return true;

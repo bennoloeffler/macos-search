@@ -103,6 +103,16 @@ regressions):**
   `ls -la ~ | grep '\->'`.
 - **Counter caps at exactly 1,000,000 / 5,000,000**: that's the folder / file
   soft cap. Raise `kDefaultSoftCap` in `PathCacheManager.h` / `FileCacheManager.h`.
+- **Count grows on every warm restart** ("counts MORE the second time"): the
+  index inflates ~70% per launch. Root cause was an ORDERING race —
+  `tryLoadSnapshot()` (which `m_nodes.swap()`s the whole store) ran AFTER the
+  dialog constructor had already started a scan on the empty store; the scan
+  kept stale node indices and re-added every child. Fixed by loading the
+  snapshot BEFORE constructing the dialog (main.cpp). To check: cold-scan, note
+  the count, then warm-restart 2–3× — it must stay flat. Trace with
+  `MSEARCH_TRACE_SCAN=1` and look for `ADD` lines with high `node=` numbers on a
+  warm start (those are freshly-appended duplicate subtrees). Regression-locked
+  by PathStoreTest `warmReconcileViaWalkDoesNotInflate`.
 - **Memory keeps climbing to GB**: check `bytesUsed()` per entry; the store
   should be ~40 B/entry. A climb means duplicate entries (e.g. macOS firmlink
   paths `/System/Volumes/Data/...` mirroring `/Applications`, `/Users`).

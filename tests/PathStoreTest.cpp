@@ -514,6 +514,76 @@ void PathStoreTest::reconcileAfterLoadDoesNotInflate()
     QCOMPARE(t.count(PathStore::File), files0);
 }
 
+void PathStoreTest::warmReconcileViaWalkDoesNotInflate()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString file = tmp.path() + "/index.bin";
+
+    PathStore s;
+    seedStore(s);
+    const int f0 = s.count(PathStore::Folder);
+    const int fi0 = s.count(PathStore::File);
+    QVERIFY(s.saveTo(file, kTestFingerprint));
+
+    PathStore t;
+    QVERIFY(t.loadFrom(file, kTestFingerprint));
+    QCOMPARE(t.count(PathStore::Folder), f0);
+    QCOMPARE(t.count(PathStore::File), fi0);
+
+    // The REAL warm-start reconcile resolves each path by WALK (findOrCreatePath
+    // / ensurePath in addPathToCache), not by the exact node. If the walk fails
+    // to find an existing node it re-adds it — the counter then climbs on every
+    // restart. Critically includes an umlaut path: macOS filenames are NFD, and
+    // any NFC/NFD normalization mismatch between the saved name and the walked
+    // key would silently duplicate every accented entry.
+    t.beginScanGeneration();
+    PathStore::Add st;
+    t.findOrCreatePath("/home/projects", PathStore::Folder, -1, &st);
+    QCOMPARE(st, PathStore::Add::Existed);
+    t.findOrCreatePath("/home/projects/app/README.md", PathStore::File, -1, &st);
+    QCOMPARE(st, PathStore::Add::Existed);
+    t.findOrCreatePath(QString::fromUtf8("/home/Büro/Café-Liste.pdf"),
+                       PathStore::File, -1, &st);
+    QCOMPARE(st, PathStore::Add::Existed);   // umlaut path must dedup
+    QCOMPARE(t.count(PathStore::Folder), f0);
+    QCOMPARE(t.count(PathStore::File), fi0);
+}
+
+void PathStoreTest::purgeExcludedSubtreeDropsJunkKeepsRest()
+{
+    // Reproduces the "counts MORE on restart" contamination: a buggy build
+    // indexed entries under an excluded root (~/Library/Containers). The load
+    // purge (markDeletedRecursive on the excluded node) must drop the whole
+    // junk subtree while leaving legit siblings — and get the counts right.
+    PathStore s;
+    s.findOrCreatePath("/Users/x/projects/app/main.cpp", PathStore::File);
+    s.findOrCreatePath("/Users/x/notes.txt", PathStore::File);
+    // Junk baked in under the excluded ~/Library:
+    s.findOrCreatePath("/Users/x/Library/Containers/com.apple.foo/Data/a.txt",
+                       PathStore::File);
+    s.findOrCreatePath("/Users/x/Library/Containers/com.apple.bar/Data/b.txt",
+                       PathStore::File);
+    s.findOrCreatePath("/Users/x/Library/Group Containers/g/c.txt",
+                       PathStore::File);
+    const int filesBefore = s.count(PathStore::File);
+    QCOMPARE(filesBefore, 5);
+
+    // The purge: find the excluded root, drop its subtree.
+    const qint32 lib = s.find("/Users/x/Library");
+    QVERIFY(lib >= 0);
+    const int removed = s.markDeletedRecursive(lib);
+    QCOMPARE(removed, 3);                                  // 3 junk files gone
+
+    QCOMPARE(s.count(PathStore::File), 2);                // only legit remain
+    QVERIFY(s.isEntry(s.find("/Users/x/projects/app/main.cpp"), PathStore::File));
+    QVERIFY(s.isEntry(s.find("/Users/x/notes.txt"), PathStore::File));
+    // The junk entries are tombstoned (no longer live; dropped on next save).
+    QVERIFY(!s.isEntry(
+        s.find("/Users/x/Library/Containers/com.apple.foo/Data/a.txt"),
+        PathStore::File));
+}
+
 void PathStoreTest::saveDropsTombstonedNodes()
 {
     QTemporaryDir tmp;
