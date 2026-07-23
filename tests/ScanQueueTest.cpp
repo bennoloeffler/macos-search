@@ -10,7 +10,8 @@ void ScanQueueTest::testMostProbableTargetsComeFirst()
     // user dirs lead, home closes the list.
     QCOMPARE(q, QStringList({"/Users/x/Desktop", "/Users/x/Downloads",
                              "/Users/x/Documents", "/Applications",
-                             "/Users/x/Applications", "/Users/x"}));
+                             "/Users/x/Applications", "/System/Applications",
+                             "/Users/x"}));
 }
 
 void ScanQueueTest::testDefaultStartLeadsWhenSet()
@@ -31,8 +32,8 @@ void ScanQueueTest::testDeduplicatesAcrossSources()
     // home once, and the genuinely new favorite is appended last.
     QCOMPARE(q, QStringList({"/Users/x/Desktop", "/Users/x/Downloads",
                              "/Users/x/Documents", "/Applications",
-                             "/Users/x/Applications", "/Users/x",
-                             "/Volumes/ext"}));
+                             "/Users/x/Applications", "/System/Applications",
+                             "/Users/x", "/Volumes/ext"}));
 }
 
 void ScanQueueTest::testDropboxDirsSlotBeforeHome()
@@ -42,6 +43,6 @@ void ScanQueueTest::testDropboxDirsSlotBeforeHome()
         {"/Users/x/VundS Dropbox"});
     QCOMPARE(q, QStringList({"/Users/x/Desktop", "/Users/x/Downloads",
                              "/Users/x/Documents", "/Applications",
-                             "/Users/x/Applications",
+                             "/Users/x/Applications", "/System/Applications",
                              "/Users/x/VundS Dropbox", "/Users/x"}));
 }

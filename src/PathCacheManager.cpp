@@ -698,6 +698,14 @@ static const QStringList &pathLevelExcludes()
 
 static bool isPathLevelExcluded(const QString &absolutePath)
 {
+    // Carve-out: system apps (Terminal, Activity Monitor, Preview, …) live in
+    // /System/Applications, inside the otherwise-excluded /System. Users search
+    // for them, and they are cheap opaque .app leaves — allow this subtree even
+    // though /System is excluded.
+    if (absolutePath == QLatin1String("/System/Applications")
+        || absolutePath.startsWith(QLatin1String("/System/Applications/"))) {
+        return false;
+    }
     for (const QString &prefix : pathLevelExcludes()) {
         if (absolutePath == prefix || absolutePath.startsWith(prefix + QLatin1Char('/'))) {
             return true;
