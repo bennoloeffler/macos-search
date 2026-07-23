@@ -62,6 +62,9 @@ constexpr int kRowPadRight = 14;
 constexpr int kScoreBadgeW = 24;
 constexpr int kScoreBadgeH = 16;
 constexpr int kGlyphW      = 16;
+// Fixed-width type-indicator column (folder glyph OR a ".ext" chip). Fixed so
+// the paths left-align across rows regardless of the chip's own width.
+constexpr int kTypeColW    = 52;
 constexpr int kColumnGap   = 10;
 constexpr int kLineNoW     = 60;
 constexpr int kChildIndent = 56;
@@ -235,7 +238,7 @@ QSize SearchResultDelegate::sizeHint(const QStyleOptionViewItem &option,
     const QString path = index.data(PathRole).toString();
     const QString snippet = index.data(SnippetRole).toString();
     const QString text = !snippet.isEmpty() ? snippet : path;
-    int width = kRowPadLeft + kScoreBadgeW + kColumnGap + kGlyphW + kColumnGap
+    int width = kRowPadLeft + kScoreBadgeW + kColumnGap + kTypeColW + kColumnGap
                 + fm.horizontalAdvance(text) + 100 + kRowPadRight;
     if (kind == Kind::ContentLine) {
         width = kChildIndent + kLineNoW + kSnippetSidePad
@@ -394,27 +397,45 @@ void SearchResultDelegate::paint(QPainter *p,
     }
     cursorX += kScoreBadgeW + kColumnGap;
 
-    // Kind glyph — text emoji at standard size. macOS HIG would prefer real
-    // icons; we stay with emoji to avoid asset dependencies, but smaller and
-    // dimmer so they don't compete with the path.
+    // Type indicator — folder glyph for folders, a ".ext" chip for files (or
+    // the generic file glyph when a file has no extension). Sits right after
+    // the rank badge, in a fixed-width column so the paths line up. This is the
+    // at-a-glance "what kind of thing is this" cue.
     {
-        QFont gf = option.font;
-        gf.setPointSize(option.font.pointSize());
-        p->setFont(gf);
-        p->setPen(secondaryText());
-        const QString glyph = (kind == Kind::Folder) ? QStringLiteral("􀈕")
-                                                     : QStringLiteral("􀈷");
-        // SF Symbols private-use codepoints fall back gracefully to text
-        // emoji on systems without the SF Pro Symbols font:
-        const QString fallback = (kind == Kind::Folder) ? QStringLiteral("📁")
-                                                        : QStringLiteral("📄");
-        const bool hasSymbols = QFontMetrics(gf).inFont(glyph.at(0));
-        p->drawText(QRect(cursorX, rect.top(), kGlyphW, rect.height()),
-                    Qt::AlignVCenter | Qt::AlignLeft,
-                    hasSymbols ? glyph : fallback);
-        p->setFont(option.font);
+        const int typeColX = cursorX;
+        if (kind == Kind::File && !ext.isEmpty()) {
+            // Extension chip, left-aligned in the column.
+            QFont chipFont = option.font;
+            chipFont.setPointSize(qMax(8, option.font.pointSize() - 3));
+            QFontMetrics chipFm(chipFont);
+            const QString chipText = "." + ext;
+            const int chipW = qMin(kTypeColW,
+                                   chipFm.horizontalAdvance(chipText) + 12);
+            QRect chipRect(typeColX, rect.center().y() - 8, chipW, 16);
+            const QFont prev = p->font();
+            p->setFont(chipFont);
+            drawChip(p, chipRect, chipBg(), tertiaryText(), chipText,
+                     QFont::Medium);
+            p->setFont(prev);
+        } else {
+            // Folder glyph (or generic file glyph for extensionless files).
+            QFont gf = option.font;
+            p->setFont(gf);
+            p->setPen(secondaryText());
+            const QString glyph = (kind == Kind::Folder) ? QStringLiteral("􀈕")
+                                                         : QStringLiteral("􀈷");
+            // SF Symbols private-use codepoints fall back gracefully to text
+            // emoji on systems without the SF Pro Symbols font:
+            const QString fallback = (kind == Kind::Folder) ? QStringLiteral("📁")
+                                                            : QStringLiteral("📄");
+            const bool hasSymbols = QFontMetrics(gf).inFont(glyph.at(0));
+            p->drawText(QRect(typeColX, rect.top(), kGlyphW, rect.height()),
+                        Qt::AlignVCenter | Qt::AlignLeft,
+                        hasSymbols ? glyph : fallback);
+            p->setFont(option.font);
+        }
     }
-    cursorX += kGlyphW + kColumnGap;
+    cursorX += kTypeColW + kColumnGap;
 
     // Path with directory/basename hierarchy and match highlighting.
     const QList<QPair<int, int>> ranges = matchRangesIn(path, query);
@@ -428,21 +449,7 @@ void SearchResultDelegate::paint(QPainter *p,
     opts.dimUntil = dimUntil;
     cursorX = drawHighlightedText(p, cursorX, baseline, path, ranges, opts);
 
-    // Extension chip (files only) — tiny, secondary.
-    if (kind == Kind::File && !ext.isEmpty()) {
-        cursorX += kColumnGap;
-        QFont chipFont = option.font;
-        chipFont.setPointSize(qMax(8, option.font.pointSize() - 3));
-        QFontMetrics chipFm(chipFont);
-        const QString chipText = "." + ext;
-        const int chipW = chipFm.horizontalAdvance(chipText) + 12;
-        QRect chipRect(cursorX, rect.center().y() - 8, chipW, 16);
-        const QFont prev = p->font();
-        p->setFont(chipFont);
-        drawChip(p, chipRect, chipBg(), tertiaryText(), chipText, QFont::Medium);
-        p->setFont(prev);
-        cursorX += chipW;
-    }
+    // (The extension chip now lives up front as the type indicator.)
 
     // Match-count badge — right-aligned, secondary chip.
     if (matchCount > 0) {
