@@ -505,133 +505,92 @@ qint32 PathCacheManager::addPathToCache(const QString &path)
 
 void PathCacheManager::onDirectoryChanged(const QString &path)
 {
-    // Ignore filesystem changes during scan transitions to avoid race conditions
-    // that could incorrectly remove cached paths
-    if (m_stopRequested.loadAcquire()) {
-        return;
-    }
-    // Skip live diffs WHILE a scan is running. The scan already indexes the
-    // current on-disk state, and diffing here would have the main thread
-    // fight the 8 scan-worker threads for the store's write lock — the
-    // dominant beach-ball cause during the initial/Dropbox scan. Events that
-    // land mid-scan are covered by the scan itself; steady-state events (no
-    // scan running) are processed normally.
-    if (m_scanning.loadAcquire()) {
-        return;
-    }
-
-    // FSEvents delivers canonical paths, often with a trailing slash — clean
-    // them so store lookups and prefix maths line up.
+    // Cheap guards on the MAIN thread; the heavy diff (entryList on a
+    // possibly-huge changed directory — a 100k-entry dir once blocked the UI
+    // for 13 s) is dispatched to a background thread. Deduped by path so an
+    // FSEvents flood for the same dir doesn't pile up tasks.
+    if (m_stopRequested.loadAcquire() || m_scanning.loadAcquire()) return;
     const QString clean = QDir::cleanPath(path);
-    constexpr quint8 kBothKinds = (1u << PathStore::Folder) | (1u << PathStore::File);
-
-    // Guard: only diff a directory we actually track. An event for an
-    // untracked or excluded directory must NOT synthesize a phantom node
-    // (the old code called ensurePath() here). If the dir itself isn't in
-    // the store, its parent's own event covers any relevant change.
     if (isPathLevelExcluded(clean)) return;
     {
         const QString base = QFileInfo(clean).fileName();
         if (m_excludeSettings && m_excludeSettings->shouldExclude(base)) return;
     }
+    if (m_store->find(clean) < 0) return;   // only diff a tracked directory
+    if (m_dirDiffScheduled.contains(clean)) return;
+    m_dirDiffScheduled.insert(clean);
+    QThreadPool::globalInstance()->start([this, clean]() {
+        diffDirectory(clean);
+        QMetaObject::invokeMethod(this, [this, clean]() {
+            m_dirDiffScheduled.remove(clean);
+            scheduleLiveCacheUpdate();
+        }, Qt::QueuedConnection);
+    });
+}
+
+void PathCacheManager::diffDirectory(const QString &clean)
+{
+    // Runs on a background thread pool. The store and file cache are internally
+    // locked; only the completion (scheduleLiveCacheUpdate + dedup removal) is
+    // marshalled back to the main thread by the caller.
+    if (m_stopRequested.loadAcquire()) return;
+    constexpr quint8 kBothKinds = (1u << PathStore::Folder) | (1u << PathStore::File);
     const qint32 dirNode = m_store->find(clean);
     if (dirNode < 0) return;
 
     QDir dir(clean);
     if (!dir.exists()) {
-        // Directory was deleted - remove it and all children from cache
-        // But only if we can confirm it's truly gone (not just temporarily unreadable)
-        if (QFileInfo(clean).exists()) {
-            // Directory exists but is unreadable - don't remove from cache
-            return;
-        }
+        if (QFileInfo(clean).exists()) return;   // unreadable, not truly gone
         m_store->markDeletedRecursive(dirNode, kBothKinds, nullptr);
-        scheduleLiveCacheUpdate();
         return;
     }
 
-    // Standalone-app drift: always include hidden — eye-toggle is
-    // presentational only. See docs/todos.md TODO 4.
-    // NoSymLinks is CRITICAL: without it QDir::Dirs stat()s each entry
-    // (following symlinks) to classify it, and following the cloud-storage
-    // symlinks in ~ (~/iCloud, ~/OneDrive-*) triggers a macOS File Provider /
-    // privacy prompt and blocks the scan. lstat-based NoSymLinks skips them.
-    QDir::Filters scanFilters = QDir::Dirs | QDir::NoDotAndDotDot
+    // NoSymLinks: never follow cloud-storage symlinks (privacy prompts / loops).
+    const QDir::Filters folderFilters = QDir::Dirs | QDir::NoDotAndDotDot
                                 | QDir::Readable | QDir::Hidden | QDir::NoSymLinks;
-    QStringList currentEntries = dir.entryList(scanFilters);
+    const QStringList currentEntries = dir.entryList(folderFilters);
 
-    // Snapshot cached children (folders and files) of this directory —
-    // childrenOf() instead of a full-cache sweep per fs event.
     const QString prefix = clean + "/";
     QHash<QString, qint32> cachedFolders, cachedFilesHere;
     for (qint32 c : m_store->childrenOf(dirNode)) {
-        if (m_store->isEntry(c, PathStore::Folder)) {
-            cachedFolders.insert(m_store->nameOf(c), c);
-        } else if (m_store->isEntry(c, PathStore::File)) {
-            cachedFilesHere.insert(m_store->nameOf(c), c);
-        }
+        if (m_store->isEntry(c, PathStore::Folder)) cachedFolders.insert(m_store->nameOf(c), c);
+        else if (m_store->isEntry(c, PathStore::File)) cachedFilesHere.insert(m_store->nameOf(c), c);
     }
 
-    // Find new directories. The FSEvents stream is recursive, so no
-    // per-directory registration is needed — but a newly-created directory's
-    // subtree must be walked (its own create event may arrive before or after
-    // this one, and a rename delivers only the parent event). expandTo()
-    // enqueues the walk (or starts one) without clearing the cache; it no-ops
-    // if the subtree is already covered.
+    // New directories: index the name; descend (on THIS bg thread) unless it's
+    // a bundle or a name-excluded dir (node_modules/build/… — name only).
     for (const QString &entry : currentEntries) {
         if (cachedFolders.contains(entry)) continue;
         const QString childPath = prefix + entry;
-        addPathToCache(childPath);               // folder name is indexed
-        // Cache the name but DON'T descend for: opaque bundles (.app), and
-        // name-excluded dirs (node_modules, build, …) — index the name, not
-        // the contents. Walking a freshly-dropped .app on the main thread
-        // also once froze the UI.
+        addPathToCache(childPath);
         if (isOpaqueBundle(entry)
             || (m_excludeSettings && m_excludeSettings->shouldExclude(entry)))
             continue;
-        // Walk its subtree on a BACKGROUND thread — FSEvents delivers
-        // descendant events out of order, and a big new directory must never
-        // block the UI (see scheduleSubtreeIndex).
-        scheduleSubtreeIndex(childPath);
+        indexNewSubtree(childPath);
     }
 
-    // Find deleted directories
-    // Only remove if the directory truly doesn't exist (not just unreadable)
+    // Deleted directories (truly gone, not just unreadable).
     for (auto it = cachedFolders.cbegin(); it != cachedFolders.cend(); ++it) {
         if (currentEntries.contains(it.key())) continue;
-        // Double-check: is the directory actually deleted, or just unreadable?
         if (QFileInfo(prefix + it.key()).exists()) continue;
-        // Directory was truly deleted - remove it and all children
         m_store->markDeletedRecursive(it.value(), kBothKinds, nullptr);
     }
 
-    // File-level diff: pick up newly created and removed files in this
-    // directory. (Files don't get their own watcher entry; we piggyback on
-    // the watched parent directory.)
+    // File-level diff (files piggyback on the parent-dir event).
     {
-        QDir::Filters fileFilters = QDir::Files | QDir::NoDotAndDotDot
+        const QDir::Filters fileFilters = QDir::Files | QDir::NoDotAndDotDot
                                     | QDir::Readable | QDir::Hidden;
         const QStringList currentFiles = dir.entryList(fileFilters);
         FileCacheManager *fileCache = FileCacheManager::instance();
-
-        // Added files.
         for (const QString &entry : currentFiles) {
-            if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(entry)) {
-                continue;
-            }
+            if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(entry)) continue;
             if (!cachedFilesHere.contains(entry)) fileCache->addFile(prefix + entry);
         }
-
-        // Removed files.
         for (auto it = cachedFilesHere.cbegin(); it != cachedFilesHere.cend(); ++it) {
             if (currentFiles.contains(it.key())) continue;
-            if (!QFileInfo(prefix + it.key()).exists()) {
-                fileCache->removeFile(prefix + it.key());
-            }
+            if (!QFileInfo(prefix + it.key()).exists()) fileCache->removeFile(prefix + it.key());
         }
     }
-
-    scheduleLiveCacheUpdate();
 }
 
 // Path-level exclude list.

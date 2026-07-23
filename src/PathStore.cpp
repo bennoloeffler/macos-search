@@ -423,7 +423,7 @@ namespace {
 
 // v2: Node grew from 12 to 20 bytes (firstChild/nextSibling). v1 snapshots
 // are a different node size and are rejected → harmless cold scan.
-constexpr quint32 kSnapshotVersion = 2;
+constexpr quint32 kSnapshotVersion = 3;
 constexpr int kFingerprintLen = 32;
 
 struct SnapshotHeader {

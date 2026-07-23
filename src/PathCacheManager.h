@@ -131,6 +131,12 @@ private:
     void scheduleSubtreeIndex(const QString &dirPath);
     QSet<QString> m_subtreeIndexScheduled;   // main-thread only
 
+    // The per-directory FSEvents diff, run OFF the main thread (entryList on a
+    // huge changed dir once blocked the UI 13s). onDirectoryChanged is the
+    // main-thread slot that dedups + dispatches this.
+    void diffDirectory(const QString &clean);
+    QSet<QString> m_dirDiffScheduled;        // main-thread only
+
     // Parallel scan queue — each pending directory carries its resolved
     // PathStore node so workers never re-resolve paths.
     struct ScanItem { QString path; qint32 node; };
@@ -163,8 +169,8 @@ public:
         UserExpand = 1,
     };
 
-    static constexpr int kDefaultSoftCap = 1'000'000;
-    static constexpr int kDefaultHardCeiling = 5'000'000;
+    static constexpr int kDefaultSoftCap = 5'000'000;
+    static constexpr int kDefaultHardCeiling = 10'000'000;
     static constexpr int kSoftCapIncrement = 150'000;
 
     int softCap() const { return m_softCap.loadAcquire(); }

@@ -295,6 +295,6 @@ void FileCacheManagerTest::testDefaultCapsMatchConstants()
     QCOMPARE(FileCacheManager::kDefaultSoftCap, 5'000'000);
     QCOMPARE(FileCacheManager::kDefaultHardCeiling, 10'000'000);
     QCOMPARE(FileCacheManager::kSoftCapIncrement, 1'000'000);
-    QCOMPARE(PathCacheManager::kDefaultSoftCap, 1'000'000);
-    QCOMPARE(PathCacheManager::kDefaultHardCeiling, 5'000'000);
+    QCOMPARE(PathCacheManager::kDefaultSoftCap, 5'000'000);
+    QCOMPARE(PathCacheManager::kDefaultHardCeiling, 10'000'000);
 }
