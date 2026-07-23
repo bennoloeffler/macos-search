@@ -9,7 +9,8 @@ void ScanQueueTest::testMostProbableTargetsComeFirst()
     // No default start, no favorites, no Dropbox dirs: the well-known
     // user dirs lead, home closes the list.
     QCOMPARE(q, QStringList({"/Users/x/Desktop", "/Users/x/Downloads",
-                             "/Users/x/Documents", "/Users/x"}));
+                             "/Users/x/Documents", "/Applications",
+                             "/Users/x/Applications", "/Users/x"}));
 }
 
 void ScanQueueTest::testDefaultStartLeadsWhenSet()
@@ -29,7 +30,8 @@ void ScanQueueTest::testDeduplicatesAcrossSources()
     // Desktop appears once (default start), Downloads once (well-known),
     // home once, and the genuinely new favorite is appended last.
     QCOMPARE(q, QStringList({"/Users/x/Desktop", "/Users/x/Downloads",
-                             "/Users/x/Documents", "/Users/x",
+                             "/Users/x/Documents", "/Applications",
+                             "/Users/x/Applications", "/Users/x",
                              "/Volumes/ext"}));
 }
 
@@ -39,6 +41,7 @@ void ScanQueueTest::testDropboxDirsSlotBeforeHome()
         "/Users/x", QString(), {},
         {"/Users/x/VundS Dropbox"});
     QCOMPARE(q, QStringList({"/Users/x/Desktop", "/Users/x/Downloads",
-                             "/Users/x/Documents",
+                             "/Users/x/Documents", "/Applications",
+                             "/Users/x/Applications",
                              "/Users/x/VundS Dropbox", "/Users/x"}));
 }

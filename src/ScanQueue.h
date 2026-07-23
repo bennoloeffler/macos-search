@@ -28,6 +28,11 @@ inline QStringList build(const QString &home,
     push(home + QStringLiteral("/Desktop"));
     push(home + QStringLiteral("/Downloads"));
     push(home + QStringLiteral("/Documents"));
+    // Apps early: users search for them, and /Applications is cheap (its .app
+    // bundles are opaque leaves). Scanning it here — not last with `/` — means
+    // apps are searchable within the first seconds.
+    push(QStringLiteral("/Applications"));
+    push(home + QStringLiteral("/Applications"));
     for (const QString &d : dropboxDirs) push(d);
     push(home);                              // the rest of home
     for (const QString &f : favorites) push(f);

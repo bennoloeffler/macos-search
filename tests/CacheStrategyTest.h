@@ -31,7 +31,7 @@ private slots:
     // Expanded path-level excludes (2026-05-19 — runaway-scan regression)
     void usrPathIsNotInCacheAfterScan();
     void libraryPathIsNotInCacheAfterScan();
-    void applicationsPathIsNotInCacheAfterScan();
+    void applicationsAreScannable();
     void optPathIsNotInCacheAfterScan();
 
     // ~/Library + ~/.Trash excludes (2026-07-21 — descending into

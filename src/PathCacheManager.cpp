@@ -661,8 +661,10 @@ static const QStringList &pathLevelExcludes()
         // BSD layout — package managers and system binaries.
         QStringLiteral("/usr"),         // /usr/share alone is millions of tiny files
         QStringLiteral("/Library"),     // system-wide app support
-        QStringLiteral("/Applications"),// .app bundles already skipped, but this
-                                        // also skips the directory itself
+        // NOTE: /Applications is intentionally NOT excluded — users search for
+        // apps. Its .app bundles are opaque leaves (isOpaqueBundle), so it
+        // costs only a few hundred entries, and it is scanned EARLY (see
+        // ScanQueue::build) so apps are searchable within seconds.
         QStringLiteral("/opt"),         // Homebrew, MacPorts
         QStringLiteral("/bin"),
         QStringLiteral("/sbin"),

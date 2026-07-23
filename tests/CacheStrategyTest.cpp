@@ -208,13 +208,25 @@ void CacheStrategyTest::libraryPathIsNotInCacheAfterScan()
     QVERIFY(!anyPathStartsWith(cache->cachedPaths(), QStringLiteral("/Library")));
 }
 
-void CacheStrategyTest::applicationsPathIsNotInCacheAfterScan()
+void CacheStrategyTest::applicationsAreScannable()
 {
+    // /Applications is NOT excluded — users search for apps. Its .app bundles
+    // are opaque leaves (cheap), so a scan indexes the app names.
     auto *cache = PathCacheManager::instance();
-    cache->expandTo(QStringLiteral("/"));
-    QTest::qWait(800);
     cache->stopScan();
-    QVERIFY(!anyPathStartsWith(cache->cachedPaths(), QStringLiteral("/Applications")));
+    QTest::qWait(30);
+    cache->expandTo(QStringLiteral("/Applications"));
+    QTest::qWait(1500);
+    cache->stopScan();
+    const QStringList all = cache->cachedPaths();
+    bool anyApp = false;
+    for (const QString &p : all) {
+        if (p.startsWith(QStringLiteral("/Applications/")) && p.endsWith(".app")) {
+            anyApp = true;
+            break;
+        }
+    }
+    QVERIFY2(anyApp, "no .app indexed under /Applications — apps unsearchable");
 }
 
 void CacheStrategyTest::optPathIsNotInCacheAfterScan()
