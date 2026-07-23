@@ -53,6 +53,12 @@ private slots:
     // contents are neither read nor descended — the primary index bound.
     void hugeDirIndexedByNameButNotDescended();
 
+    // Root-scan path join (2026-07-23): scanning the "Macintosh HD" (/) favorite
+    // must not build "//Users…" paths — a leading double slash bypasses every
+    // single-slash path-level exclude (and dedup), which walked into ~/Library
+    // app containers and hung on a TCC prompt.
+    void rootScanNeverProducesDoubleSlash();
+
     // Folder cap (2026-05-19)
     void folderHardCeilingBlocksAdditions();
     // Cap-aware descent (2026-07-21, Block 2): when folder AND file caps

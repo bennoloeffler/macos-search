@@ -22,6 +22,18 @@ static bool isOpaqueBundle(const QString &basename);
 #include <dirent.h>
 
 namespace {
+// Join a directory path and a child name without ever producing a leading
+// "//". The scan root can be "/" (the "Macintosh HD" favorite); a naive
+// dir + "/" + name yields "//Users", and since every path-level exclude uses a
+// single-slash prefix, the double slash silently bypasses ALL excludes AND the
+// completed-root dedup — the scan then walked straight into ~/Library's app
+// containers and blocked on a TCC "access data from other apps" prompt.
+inline QString joinPath(const QString &dir, const QString &name)
+{
+    return dir.endsWith(QLatin1Char('/')) ? dir + name
+                                          : dir + QLatin1Char('/') + name;
+}
+
 // Count a directory's direct entries (excluding . and ..), bailing as soon as
 // the count exceeds `cap`. POSIX readdir — no per-entry stat, unlike
 // QDir::entryInfoList — so learning "this dir is huge" costs O(cap), never
@@ -585,7 +597,9 @@ void PathCacheManager::diffDirectory(const QString &clean)
                                 | QDir::Readable | QDir::Hidden | QDir::NoSymLinks;
     const QStringList currentEntries = dir.entryList(folderFilters);
 
-    const QString prefix = clean + "/";
+    // Root "/" is already "/"; anything else gets a single trailing slash.
+    // (A naive clean + "/" makes "//" at the root — see joinPath().)
+    const QString prefix = clean.endsWith(QLatin1Char('/')) ? clean : clean + QLatin1Char('/');
     QHash<QString, qint32> cachedFolders, cachedFilesHere;
     for (qint32 c : m_store->childrenOf(dirNode)) {
         if (m_store->isEntry(c, PathStore::Folder)) cachedFolders.insert(m_store->nameOf(c), c);
@@ -833,6 +847,9 @@ void PathCacheManager::scanWorker()
             continue;
         }
 
+        if (qEnvironmentVariableIsSet("MSEARCH_TRACE_SCAN"))
+            fprintf(stderr, "SCAN %s\n", currentPath.toUtf8().constData());
+
         // Huge-directory guard (the primary index bound). A dir with more than
         // maxDirChildren direct entries is a cache / backup / build / migration
         // blob — index its NAME (already added by its parent) but don't read or
@@ -942,7 +959,7 @@ void PathCacheManager::scanWorker()
                 const qint32 node = res.nodes.at(i);
                 if (node < 0 || isOpaqueBundle(newNames.at(i))
                     || noDescendNames.contains(newNames.at(i))) continue;
-                m_scanQueue.enqueue({currentPath + "/" + newNames.at(i), node});
+                m_scanQueue.enqueue({joinPath(currentPath, newNames.at(i)), node});
                 queued = true;
             }
             if (queued) m_queueCondition.wakeAll();
@@ -1129,7 +1146,7 @@ void PathCacheManager::indexNewSubtree(const QString &dirPath)
         | QDir::NoSymLinks);
     for (const QFileInfo &info : subs) {
         const QString name = info.fileName();
-        const QString full = dirPath + "/" + name;
+        const QString full = joinPath(dirPath, name);
         if (isPathLevelExcluded(full)) continue;   // /System … — drop entirely
         addPathToCache(full);                        // folder name is indexed
         // Symlinks, opaque bundles, and name-excluded dirs (node_modules,
@@ -1145,7 +1162,7 @@ void PathCacheManager::indexNewSubtree(const QString &dirPath)
     FileCacheManager *fc = FileCacheManager::instance();
     for (const QString &f : files) {
         if (m_excludeSettings && m_excludeSettings->shouldExcludeFile(f)) continue;
-        fc->addFile(dirPath + "/" + f);
+        fc->addFile(joinPath(dirPath, f));
     }
 
     for (const QString &c : toRecurse) indexNewSubtree(c);

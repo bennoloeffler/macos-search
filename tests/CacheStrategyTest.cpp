@@ -284,6 +284,29 @@ void CacheStrategyTest::symlinkedDirIsSkippedNotFollowed()
     QVERIFY(!all.contains(root + "/link/inner"));
 }
 
+void CacheStrategyTest::rootScanNeverProducesDoubleSlash()
+{
+    // Scan from "/" briefly. The first level (/Users, /System, …) is built
+    // within a few hundred ms, which is exactly where the "//Users" bug showed.
+    auto *cache = PathCacheManager::instance();
+    cache->stopScan();
+    QTest::qWait(30);
+    cache->expandTo(QStringLiteral("/"));
+    QTest::qWait(900);
+    cache->stopScan();
+
+    const QStringList all = cache->cachedPaths();
+    // The load-bearing invariant: NO cached path may start with "//". A leading
+    // double slash silently defeats every single-slash path-level exclude.
+    const QStringList dbl = all.filter(QRegularExpression(QStringLiteral("^//")));
+    QVERIFY2(dbl.isEmpty(),
+             qPrintable(QStringLiteral("double-slash paths leaked: ")
+                        + dbl.mid(0, 3).join(QStringLiteral(", "))));
+    // And with clean paths the excludes actually bite: no app-data containers.
+    QVERIFY2(!anyPathStartsWith(all, QDir::homePath() + "/Library"),
+             "root scan reached ~/Library (exclude bypassed)");
+}
+
 void CacheStrategyTest::hugeDirIndexedByNameButNotDescended()
 {
     QTemporaryDir tmp;
