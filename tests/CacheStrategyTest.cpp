@@ -284,6 +284,42 @@ void CacheStrategyTest::symlinkedDirIsSkippedNotFollowed()
     QVERIFY(!all.contains(root + "/link/inner"));
 }
 
+void CacheStrategyTest::hugeDirIndexedByNameButNotDescended()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString root = tmp.path();
+    // A "huge" dir with a child that would be visible if we descended, plus a
+    // normal sibling dir that must still be fully indexed.
+    QVERIFY(QDir().mkpath(root + "/bigcache/hidden_inner"));
+    QVERIFY(QDir().mkpath(root + "/normal/inner"));
+    // 40 extra entries in bigcache so it exceeds the test threshold of 20.
+    for (int i = 0; i < 40; ++i)
+        QVERIFY(QDir().mkpath(root + QStringLiteral("/bigcache/d%1").arg(i)));
+
+    auto *cache = PathCacheManager::instance();
+    const int saved = cache->maxDirChildren();
+    cache->setMaxDirChildren(20);           // bigcache (41 children) is "huge"
+
+    cache->stopScan();
+    QTest::qWait(30);
+    cache->expandTo(root);
+    waitForScanComplete(cache);
+
+    const QStringList all = cache->cachedPaths();
+    cache->setMaxDirChildren(saved);        // restore for other tests
+
+    // The huge dir's NAME is indexed (still findable)…
+    QVERIFY2(all.contains(root + "/bigcache"), "huge dir name was dropped");
+    // …but its contents are NOT read or descended.
+    QVERIFY2(!anyPathStartsWith(all, root + "/bigcache/"),
+             "scan descended into a huge directory");
+    QVERIFY(!all.contains(root + "/bigcache/hidden_inner"));
+    // The normal sibling is fully indexed, contents and all.
+    QVERIFY(all.contains(root + "/normal"));
+    QVERIFY(all.contains(root + "/normal/inner"));
+}
+
 void CacheStrategyTest::symlinkToOutsideTargetNotIndexed()
 {
     // Mirrors the real bug: a symlink in the scanned dir points at a tree

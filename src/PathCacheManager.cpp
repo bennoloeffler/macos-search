@@ -11,6 +11,7 @@
 // Defined below; used by onDirectoryChanged/onRescanNeeded above their bodies.
 static bool isPathLevelExcluded(const QString &absolutePath);
 static bool isOpaqueBundle(const QString &basename);
+#include <QFile>
 #include <QFileInfo>
 #include <QTimer>
 #include <QQueue>
@@ -18,6 +19,28 @@ static bool isOpaqueBundle(const QString &basename);
 #include <QtConcurrent>
 #include <QThreadPool>
 #include <malloc/malloc.h>
+#include <dirent.h>
+
+namespace {
+// Count a directory's direct entries (excluding . and ..), bailing as soon as
+// the count exceeds `cap`. POSIX readdir — no per-entry stat, unlike
+// QDir::entryInfoList — so learning "this dir is huge" costs O(cap), never
+// O(actual) on a million-entry dir. Returns cap+1 as the sentinel for "over".
+int countChildrenCapped(const QString &path, int cap)
+{
+    DIR *d = ::opendir(QFile::encodeName(path).constData());
+    if (!d) return 0;
+    int n = 0;
+    while (struct dirent *e = ::readdir(d)) {
+        const char *nm = e->d_name;
+        if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0')))
+            continue;                       // skip . and ..
+        if (++n > cap) break;               // over the cap — stop early
+    }
+    ::closedir(d);
+    return n;
+}
+}  // namespace
 
 PathCacheManager* PathCacheManager::s_instance = nullptr;
 
@@ -35,6 +58,8 @@ PathCacheManager::PathCacheManager(QObject *parent)
     m_store = PathStore::shared();
     m_softCap.storeRelease(kDefaultSoftCap);
     m_hardCeiling.storeRelease(kDefaultHardCeiling);
+    // Always start at the default per-dir guard — never persisted (by design).
+    m_maxDirChildren.storeRelease(kDefaultMaxDirChildren);
 
     // One recursive FSEvents stream, armed with the completed scan roots
     // after each scan (see finishScan). Lives on the main thread; its
@@ -545,6 +570,16 @@ void PathCacheManager::diffDirectory(const QString &clean)
         return;
     }
 
+    // Huge-directory guard (same rule as the scan): don't diff/read/descend a
+    // cache/backup/build blob. Its name stays indexed; contents are skipped.
+    {
+        const int maxChildren = m_maxDirChildren.loadAcquire();
+        if (maxChildren > 0
+            && countChildrenCapped(clean, maxChildren) > maxChildren) {
+            return;
+        }
+    }
+
     // NoSymLinks: never follow cloud-storage symlinks (privacy prompts / loops).
     const QDir::Filters folderFilters = QDir::Dirs | QDir::NoDotAndDotDot
                                 | QDir::Readable | QDir::Hidden | QDir::NoSymLinks;
@@ -796,6 +831,20 @@ void PathCacheManager::scanWorker()
         // for personal-file search and add millions of entries.
         if (isPathLevelExcluded(currentPath)) {
             continue;
+        }
+
+        // Huge-directory guard (the primary index bound). A dir with more than
+        // maxDirChildren direct entries is a cache / backup / build / migration
+        // blob — index its NAME (already added by its parent) but don't read or
+        // descend its contents. readdir-counted with an early bail so we never
+        // fully read a million-entry dir.
+        {
+            const int maxChildren = m_maxDirChildren.loadAcquire();
+            if (maxChildren > 0
+                && countChildrenCapped(currentPath, maxChildren) > maxChildren) {
+                m_foldersExcluded.fetchAndAddRelaxed(1);
+                continue;   // name kept, contents skipped
+            }
         }
 
         // Standalone-app drift: always include hidden in the cache.
@@ -1062,6 +1111,17 @@ void PathCacheManager::indexNewSubtree(const QString &dirPath)
     if (m_stopRequested.loadAcquire()) return;
     QDir dir(dirPath);
     if (!dir.exists() || !dir.isReadable()) return;
+
+    // Huge-directory guard (same rule as the initial scan): don't read or
+    // descend a cache/backup/build blob. The dir's name was already indexed
+    // by the caller; here we just skip its contents.
+    {
+        const int maxChildren = m_maxDirChildren.loadAcquire();
+        if (maxChildren > 0
+            && countChildrenCapped(dirPath, maxChildren) > maxChildren) {
+            return;
+        }
+    }
 
     QStringList toRecurse;
     const QFileInfoList subs = dir.entryInfoList(

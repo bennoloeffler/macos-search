@@ -162,6 +162,8 @@ private:
     QAtomicInt m_ceilingReached{0};
     QAtomicInt m_softCap;
     QAtomicInt m_hardCeiling;
+    // Per-dir child-count guard; reset to kDefaultMaxDirChildren each launch.
+    QAtomicInt m_maxDirChildren{kDefaultMaxDirChildren};
 
 public:
     enum class AddSource {
@@ -172,6 +174,22 @@ public:
     static constexpr int kDefaultSoftCap = 5'000'000;
     static constexpr int kDefaultHardCeiling = 10'000'000;
     static constexpr int kSoftCapIncrement = 150'000;
+
+    // Per-directory child-count guard — the PRIMARY index bound (the soft/hard
+    // caps above are only a far-off backstop). A directory with more than this
+    // many direct entries is a cache / backup / build blob / migration dump —
+    // cryptic contents nobody searches (measured: every >10k dir not already
+    // name-excluded is exactly that). Such a dir's NAME is indexed as a leaf
+    // (so it's still findable) but its contents are neither read nor descended.
+    // Detected via readdir with an early bail, so a million-entry dir is never
+    // fully read (that slow read was a scan-counter freeze).
+    //
+    // Runtime-configurable via setMaxDirChildren() (Preferences, with a
+    // slowness warning) but deliberately NOT persisted: it resets to
+    // kDefaultMaxDirChildren on every launch.
+    static constexpr int kDefaultMaxDirChildren = 10'000;
+    int maxDirChildren() const { return m_maxDirChildren.loadAcquire(); }
+    void setMaxDirChildren(int n) { m_maxDirChildren.storeRelease(n < 0 ? 0 : n); }
 
     int softCap() const { return m_softCap.loadAcquire(); }
     int hardCeiling() const { return m_hardCeiling.loadAcquire(); }

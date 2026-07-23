@@ -48,6 +48,11 @@ private slots:
     void symlinkToOutsideTargetNotIndexed();
     void symlinkCycleTerminatesQuickly();
 
+    // Huge-directory guard (2026-07-23): a dir with more than maxDirChildren
+    // direct entries (cache/backup/build blob) is indexed by NAME but its
+    // contents are neither read nor descended — the primary index bound.
+    void hugeDirIndexedByNameButNotDescended();
+
     // Folder cap (2026-05-19)
     void folderHardCeilingBlocksAdditions();
     // Cap-aware descent (2026-07-21, Block 2): when folder AND file caps
