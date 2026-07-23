@@ -675,6 +675,10 @@ void FolderBrowserDialog::setupUi()
     // and stalls the UI. Two cached style icons (folder / file) cost nothing
     // per entry and keep scrolling smooth in huge directories.
     m_fileSystemModel->setIconProvider(new FastFileIconProvider());
+    // Don't resolve symlinks/aliases: alias resolution goes through macOS
+    // LaunchServices, which touches other apps' data and pops the "access data
+    // from other apps" TCC prompt (a modal that also wedges scan completion).
+    m_fileSystemModel->setResolveSymlinks(false);
     // Initial filter is computed once during construction; subsequent
     // changes go through applyTreeViewFilter() so Mode + eye toggle both
     // contribute to the final QDir::Filters bitmask consistently.

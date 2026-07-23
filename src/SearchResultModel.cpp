@@ -1,7 +1,28 @@
 #include "SearchResultModel.h"
 
+#include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QIcon>
+#include <QStyle>
+
+namespace {
+// Static folder/file icons — NEVER the native QFileIconProvider. That provider
+// resolves each path's real icon through macOS LaunchServices/IconServices,
+// which (a) touches other apps' data and pops the "would like to access data
+// from other apps" TCC prompt, and (b) costs a per-result LaunchServices round
+// trip while scrolling. A generic folder/file glyph is all a search list needs.
+QIcon folderIcon()
+{
+    static const QIcon i = QApplication::style()->standardIcon(QStyle::SP_DirIcon);
+    return i;
+}
+QIcon fileIcon()
+{
+    static const QIcon i = QApplication::style()->standardIcon(QStyle::SP_FileIcon);
+    return i;
+}
+}  // namespace
 
 SearchResultModel::SearchResultModel(QObject *parent)
     : QAbstractListModel(parent)
@@ -51,7 +72,7 @@ QVariant SearchResultModel::data(const QModelIndex &index, int role) const
     case Qt::ToolTipRole:
         return r.path;
     case Qt::DecorationRole:
-        return m_iconProvider.icon(QFileInfo(r.path));
+        return QFileInfo(r.path).isDir() ? folderIcon() : fileIcon();
     case PathRole:
         return r.path;
     default:

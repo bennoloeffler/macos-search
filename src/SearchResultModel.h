@@ -2,7 +2,6 @@
 #define SEARCHRESULTMODEL_H
 
 #include <QAbstractListModel>
-#include <QFileIconProvider>
 #include <QString>
 #include <QVector>
 
@@ -28,7 +27,6 @@ public:
 
 private:
     QVector<SearchResult> m_results;
-    mutable QFileIconProvider m_iconProvider;
 };
 
 #endif // SEARCHRESULTMODEL_H
