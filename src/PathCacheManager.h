@@ -126,6 +126,11 @@ private:
     // out of order, so we cannot rely on a per-level event cascade.
     void indexNewSubtree(const QString &dirPath);
 
+    // Runs indexNewSubtree() on a background thread pool (never on the main
+    // thread — that was the FSEvents-rescan hang). Deduped by path.
+    void scheduleSubtreeIndex(const QString &dirPath);
+    QSet<QString> m_subtreeIndexScheduled;   // main-thread only
+
     // Parallel scan queue — each pending directory carries its resolved
     // PathStore node so workers never re-resolve paths.
     struct ScanItem { QString path; qint32 node; };

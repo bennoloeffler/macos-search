@@ -589,9 +589,10 @@ void PathCacheManager::onDirectoryChanged(const QString &path)
         // never walked — walking a freshly-dropped .app (hundreds of Qt
         // framework files) on the main thread froze the UI.
         if (isOpaqueBundle(entry)) continue;
-        // Walk its subtree now — FSEvents delivers descendant events out of
-        // order, so we can't wait for the child's own event to arrive.
-        indexNewSubtree(childPath);
+        // Walk its subtree on a BACKGROUND thread — FSEvents delivers
+        // descendant events out of order, and a big new directory must never
+        // block the UI (see scheduleSubtreeIndex).
+        scheduleSubtreeIndex(childPath);
     }
 
     // Find deleted directories
@@ -1061,8 +1062,28 @@ void PathCacheManager::onRescanNeeded(const QString &path)
     const QString clean = QDir::cleanPath(path);
     if (isPathLevelExcluded(clean)) return;
     if (m_store->find(clean) < 0) return;
-    indexNewSubtree(clean);
-    scheduleLiveCacheUpdate();
+    scheduleSubtreeIndex(clean);
+}
+
+void PathCacheManager::scheduleSubtreeIndex(const QString &dirPath)
+{
+    // Run the (potentially huge) recursive walk on a BACKGROUND thread — a
+    // synchronous indexNewSubtree() on the main thread was THE hang: an
+    // FSEvents MustScanSubDirs (or a large new directory) walked millions of
+    // entries on the UI thread, freezing the app. The store + file cache are
+    // internally locked, so the walk is safe off-thread. Dedupe identical
+    // in-flight paths (FSEvents floods the same dir). m_subtreeIndexScheduled
+    // is touched only on the main thread (scheduleSubtreeIndex is called from
+    // main-thread slots and the completion lambda is a queued main-thread call).
+    if (m_subtreeIndexScheduled.contains(dirPath)) return;
+    m_subtreeIndexScheduled.insert(dirPath);
+    QThreadPool::globalInstance()->start([this, dirPath]() {
+        indexNewSubtree(dirPath);
+        QMetaObject::invokeMethod(this, [this, dirPath]() {
+            m_subtreeIndexScheduled.remove(dirPath);
+            scheduleLiveCacheUpdate();
+        }, Qt::QueuedConnection);
+    });
 }
 
 void PathCacheManager::indexNewSubtree(const QString &dirPath)
