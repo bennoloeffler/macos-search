@@ -61,6 +61,19 @@ public:
     {
         return info.isDir() ? folderIcon() : fileIcon();
     }
+    // CRITICAL: the base type() runs QMimeDatabase content sniffing, which
+    // READS FILE BYTES on the MAIN thread (fileSystemChanged → getInfo →
+    // getFileType → mimeTypeForFile → read). On dataless cloud files (an
+    // iCloud-evicted Desktop) each read blocks on a per-file download —
+    // clicking the Desktop favorite beachballed 10+ s AND mass-downloaded
+    // its files (captured in health-stall-20260724-145326). A cheap
+    // suffix-based string avoids touching content entirely.
+    QString type(const QFileInfo &info) const override
+    {
+        if (info.isDir()) return QStringLiteral("Folder");
+        const QString s = info.suffix();
+        return s.isEmpty() ? QStringLiteral("File") : s;
+    }
 private:
     static QIcon folderIcon()
     {

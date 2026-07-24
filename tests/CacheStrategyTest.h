@@ -53,6 +53,13 @@ private slots:
     // contents are neither read nor descended — the primary index bound.
     void hugeDirIndexedByNameButNotDescended();
 
+    // Warm-start reconcile semantics (2026-07-24): a root already KNOWN in
+    // the store (snapshot-loaded) must still be re-walked by reconcileTo(),
+    // while expandTo() keeps its known-path early-return for navigation.
+    // Without this, a warm start skipped the whole reconcile: gray dots,
+    // bogus "Scan now", and FSEvents never armed.
+    void reconcileToRescansKnownRoot();
+
     // Root-scan path join (2026-07-23): scanning the "Macintosh HD" (/) favorite
     // must not build "//Users…" paths — a leading double slash bypasses every
     // single-slash path-level exclude (and dedup), which walked into ~/Library

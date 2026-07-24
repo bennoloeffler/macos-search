@@ -137,7 +137,9 @@ void PathCacheManager::expandToUser(const QString &rootPath)
         emit folderCapRaised(newSoft);
     }
     FileCacheManager::instance()->bumpSoftCap();
-    expandTo(rootPath);
+    // Reconcile semantics: the user explicitly clicked "Scan now", so a
+    // "path already known" early-return would silently no-op the click.
+    reconcileTo(rootPath);
 }
 
 bool PathCacheManager::isPathUnderRoot(const QString &path, const QString &root)
@@ -412,6 +414,16 @@ void PathCacheManager::restartScanFrom(const QString &rootPath)
 
 void PathCacheManager::expandTo(const QString &rootPath)
 {
+    expandToImpl(rootPath, /*forceReconcile=*/false);
+}
+
+void PathCacheManager::reconcileTo(const QString &rootPath)
+{
+    expandToImpl(rootPath, /*forceReconcile=*/true);
+}
+
+void PathCacheManager::expandToImpl(const QString &rootPath, bool forceReconcile)
+{
     if (rootPath.isEmpty()) {
         return;
     }
@@ -430,8 +442,12 @@ void PathCacheManager::expandTo(const QString &rootPath)
 
     }
 
-    // Check if path is already in cache (we already have it)
-    if (m_store->isEntry(m_store->find(normalizedRoot), PathStore::Folder)) {
+    // Check if path is already in cache (we already have it). A reconcile
+    // pass must NOT take this exit: after a warm start every snapshot path is
+    // "known" here, yet still needs its mark-and-sweep re-walk (and its
+    // completedRoots entry, which arms FSEvents and turns the dots green).
+    if (!forceReconcile
+        && m_store->isEntry(m_store->find(normalizedRoot), PathStore::Folder)) {
         return;
     }
 

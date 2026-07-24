@@ -82,6 +82,18 @@ public:
     // Scans from / but skips directories already in cache (completed roots)
     void expandTo(const QString &rootPath);
 
+    // Like expandTo(), but for RECONCILE semantics: skips the "path already
+    // known in the store" early-return. expandTo()'s early-return exists for
+    // interactive navigation (don't rescan Home on every navigateTo) — but on
+    // a warm start every path in the loaded snapshot is "known", so a
+    // scheduler using expandTo() would skip ALL roots: no reconcile (drift
+    // accumulates), completedRoots stays empty (favorites stuck gray with a
+    // bogus 'Scan now'), and FSEvents never arms (NO live updates for the
+    // whole session). The startup ScanScheduler and the explicit
+    // 'Scan now' button must use this. Completed-roots coverage still
+    // short-circuits, so re-walks never repeat work.
+    void reconcileTo(const QString &rootPath);
+
     // Restart scan from a new root path without clearing existing cache
     // Stops any current scan, then starts scanning from the new root
     void restartScanFrom(const QString &rootPath);
@@ -104,6 +116,9 @@ private:
     // Disable copy
     PathCacheManager(const PathCacheManager&) = delete;
     PathCacheManager& operator=(const PathCacheManager&) = delete;
+
+    // Shared body of expandTo()/reconcileTo() — see reconcileTo() docs.
+    void expandToImpl(const QString &rootPath, bool forceReconcile);
 
     // Background scan worker
     void performScan();

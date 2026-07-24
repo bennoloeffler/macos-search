@@ -94,7 +94,12 @@ private:
         while (m_index < m_queue.size()) {
             const QString next = m_queue.at(m_index++);
             if (m_cache->isPathScanned(next)) continue;  // covered, skip
-            m_cache->expandTo(next);
+            // reconcileTo, NOT expandTo: on a warm start every queue root is
+            // already "known" in the loaded snapshot, and expandTo's
+            // known-path early-return would skip the entire reconcile —
+            // leaving completedRoots empty (gray dots, bogus "Scan now") and
+            // FSEvents unarmed (no live updates all session).
+            m_cache->reconcileTo(next);
             // If a scan is now in flight, yield and wait for scanComplete.
             // Otherwise expandTo was a no-op (path already known but not in
             // a completedRoot) — keep walking the queue.

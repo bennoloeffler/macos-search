@@ -307,6 +307,44 @@ void CacheStrategyTest::rootScanNeverProducesDoubleSlash()
              "root scan reached ~/Library (exclude bypassed)");
 }
 
+void CacheStrategyTest::reconcileToRescansKnownRoot()
+{
+    // Fixture under real $HOME, NOT QTemporaryDir: the latter canonicalizes to
+    // /private/var, which the scanner path-excludes (so nothing would ever be
+    // walked). A home subdir's canonical path is itself. (Same reason as
+    // FsEventsSyncTest.)
+    const QString root = QDir::homePath() + "/.mssearch-reconcile-test";
+    QDir(root).removeRecursively();
+    QVERIFY(QDir().mkpath(root + "/inner"));
+
+    auto *cache = PathCacheManager::instance();
+    cache->stopScan();
+    QTest::qWait(30);
+
+    // Simulate the warm-start state: the root is KNOWN in the store (as after
+    // a snapshot load) but was never scanned this session (no completed root).
+    PathStore::shared()->findOrCreatePath(root, PathStore::Folder);
+    QVERIFY(!cache->isPathScanned(root));
+
+    // expandTo: navigation semantics — known path, early-return, no re-walk.
+    cache->expandTo(root);
+    QTest::qWait(150);
+    QVERIFY2(!cache->cachedPaths().contains(root + "/inner"),
+             "expandTo must keep its known-path early-return (no re-walk)");
+
+    // reconcileTo: warm-start semantics — re-walk despite being known. The
+    // load-bearing observable is that the subtree gets walked (this is what
+    // was skipped on warm start); isPathScanned/completedRoots also follows.
+    cache->reconcileTo(root);
+    waitForScanComplete(cache);
+    QVERIFY2(cache->cachedPaths().contains(root + "/inner"),
+             "reconcileTo must actually walk the subtree");
+    // completedRoots is inserted just after m_scanning flips to 0 (finishScan),
+    // so poll rather than read once — the UI likewise reacts to scanComplete.
+    QTRY_VERIFY_WITH_TIMEOUT(cache->isPathScanned(root), 2000);
+    QDir(root).removeRecursively();
+}
+
 void CacheStrategyTest::hugeDirIndexedByNameButNotDescended()
 {
     QTemporaryDir tmp;
