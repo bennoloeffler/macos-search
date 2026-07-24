@@ -11,6 +11,11 @@ private slots:
     void initTestCase();
     void cleanupTestCase();
 
+    // Root-coverage predicate (2026-07-24): a completed "/" scan must cover
+    // every absolute path — the naive `root + "/"` prefix made "//", which
+    // covered nothing (favorites gray while Macintosh HD showed green).
+    void testIsPathUnderRoot();
+
     void testInstanceReturnsNonNull();
     void testInstanceReturnsSameSingleton();
     void testInitialStateNotScanning();

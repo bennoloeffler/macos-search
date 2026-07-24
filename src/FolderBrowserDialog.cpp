@@ -1023,6 +1023,8 @@ void FolderBrowserDialog::onDownloadPollTick()
         m_downloadPollTimer->stop();
         m_resolvedPathLabel->setText(
             tr("✓ Downloaded %1 — opening…").arg(formatFileSize(cs.sizeBytes)));
+        // The row itself must now show the real size (was "☁ 0 bytes").
+        refreshResultRowsForPath(m_downloadPollPath);
         QTimer::singleShot(4000, this,
                            [this] { updateResolvedPathLabel(); });
         return;
@@ -1030,6 +1032,23 @@ void FolderBrowserDialog::onDownloadPollTick()
     if (++m_downloadPollTicks > 180) {      // ~2 min: give up quietly
         m_downloadPollTimer->stop();
         updateResolvedPathLabel();
+    }
+}
+
+void FolderBrowserDialog::refreshResultRowsForPath(const QString &path)
+{
+    if (!m_searchResultsList) return;
+    const CloudFileState cs = CloudFileState::of(path);
+    if (cs.sizeBytes < 0) return;
+    using Roles = SearchResultDelegate;
+    for (int i = 0; i < m_searchResultsList->count(); ++i) {
+        QListWidgetItem *it = m_searchResultsList->item(i);
+        const auto kind = static_cast<SearchResultDelegate::Kind>(
+            it->data(Roles::KindRole).toInt());
+        if (kind != SearchResultDelegate::Kind::File) continue;
+        if (it->data(Roles::PathRole).toString() != path) continue;
+        it->setData(Roles::SizeRole, cs.sizeBytes);
+        it->setData(Roles::CloudMissingRole, cs.locallyMissing);
     }
 }
 

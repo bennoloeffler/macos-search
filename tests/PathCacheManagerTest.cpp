@@ -17,6 +17,23 @@ void PathCacheManagerTest::cleanupTestCase()
     PathCacheManager::instance()->stopScan();
 }
 
+void PathCacheManagerTest::testIsPathUnderRoot()
+{
+    using P = PathCacheManager;
+    // The load-bearing case: "/" covers every absolute path.
+    QVERIFY(P::isPathUnderRoot("/Users/benno", "/"));
+    QVERIFY(P::isPathUnderRoot("/", "/"));
+    QVERIFY(P::isPathUnderRoot("/Applications/Foo.app", "/"));
+    // Ordinary roots: descendants and self, but not lookalike siblings.
+    QVERIFY(P::isPathUnderRoot("/Users/benno/Desktop", "/Users/benno"));
+    QVERIFY(P::isPathUnderRoot("/Users/benno", "/Users/benno"));
+    QVERIFY(!P::isPathUnderRoot("/Users/benno2", "/Users/benno"));
+    QVERIFY(!P::isPathUnderRoot("/Users", "/Users/benno"));
+    // Degenerate inputs.
+    QVERIFY(!P::isPathUnderRoot("", "/"));
+    QVERIFY(!P::isPathUnderRoot("/Users", ""));
+}
+
 void PathCacheManagerTest::testInstanceReturnsNonNull()
 {
     QVERIFY(PathCacheManager::instance() != nullptr);

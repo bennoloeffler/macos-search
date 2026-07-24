@@ -204,6 +204,12 @@ public:
     /// today's soft limit (still bounded by the hard ceiling).
     void expandToUser(const QString &rootPath);
 
+    /// True iff `path` equals `root` or lies underneath it. The root "/"
+    /// needs special care: naive `root + "/"` yields "//", which no absolute
+    /// path starts with — that bug made a completed "/" scan cover NOTHING
+    /// (all favorites showed gray while Macintosh HD itself was green).
+    static bool isPathUnderRoot(const QString &path, const QString &root);
+
     /// True if `path` is in the completed-roots set or descends from one.
     /// Used by the per-path scan-state indicators.
     bool isPathScanned(const QString &path) const;

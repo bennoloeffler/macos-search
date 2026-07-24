@@ -1,6 +1,7 @@
 #include "FolderBrowserDialogTest.h"
 
 #include "CloudFileState.h"
+#include "SearchResultDelegate.h"
 #include "ExcludeSettings.h"
 #include "FolderBrowserDialog.h"
 #include "PathCacheManager.h"
@@ -166,6 +167,46 @@ void FolderBrowserDialogTest::testOpeningCloudPlaceholderAnnouncesDownload()
     QVERIFY2(!label->text().contains(QStringLiteral("Downloading")),
              qPrintable("label was: " + label->text()));
 
+    FolderBrowserDialog::setShellOpenSuppressedForTests(false);
+}
+
+void FolderBrowserDialogTest::testDownloadedFileRowShowsRealSize()
+{
+    FolderBrowserDialog::setShellOpenSuppressedForTests(true);
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString path = tmp.path() + "/cloud.pdf";
+    { QFile f(path); QVERIFY(f.open(QIODevice::WriteOnly)); }  // 0 bytes
+
+    FolderBrowserDialog dialog(QDir::homePath());
+    auto *results = dialog.findChild<QListWidget *>("searchResultsList");
+    QVERIFY(results);
+    using Roles = SearchResultDelegate;
+    auto *item = new QListWidgetItem(QStringLiteral("cloud.pdf"));
+    item->setData(Roles::PathRole, path);
+    item->setData(Roles::KindRole,
+                  static_cast<int>(SearchResultDelegate::Kind::File));
+    item->setData(Roles::SizeRole, qint64(0));
+    item->setData(Roles::CloudMissingRole, true);
+    results->addItem(item);
+    results->setCurrentItem(item);
+
+    // Activate → announce + poll starts (700 ms ticks).
+    emit results->itemActivated(item);
+
+    // "Cloud download" lands: write real bytes, fsync so blocks exist.
+    {
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(4096, 'z'));
+        f.flush();
+        ::fsync(f.handle());
+    }
+
+    // The poll must flip the row's roles to the real size.
+    QTRY_COMPARE_WITH_TIMEOUT(item->data(Roles::SizeRole).toLongLong(),
+                              qint64(4096), 5000);
+    QVERIFY(!item->data(Roles::CloudMissingRole).toBool());
     FolderBrowserDialog::setShellOpenSuppressedForTests(false);
 }
 

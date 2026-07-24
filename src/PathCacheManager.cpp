@@ -140,13 +140,21 @@ void PathCacheManager::expandToUser(const QString &rootPath)
     expandTo(rootPath);
 }
 
+bool PathCacheManager::isPathUnderRoot(const QString &path, const QString &root)
+{
+    if (root.isEmpty() || path.isEmpty()) return false;
+    if (path == root) return true;
+    if (root == QLatin1String("/")) return path.startsWith(QLatin1Char('/'));
+    return path.startsWith(root + QLatin1Char('/'));
+}
+
 bool PathCacheManager::isPathScanned(const QString &path) const
 {
     if (path.isEmpty()) return false;
     const QString clean = QDir::cleanPath(path);
     QMutexLocker locker(&m_mutex);
     for (const QString &root : m_completedRoots) {
-        if (clean == root || clean.startsWith(root + QLatin1Char('/'))) {
+        if (isPathUnderRoot(clean, root)) {
             return true;
         }
     }
@@ -160,8 +168,9 @@ bool PathCacheManager::isPathScanning(const QString &path) const
     QMutexLocker locker(&m_mutex);
     const QString root = m_currentScanRoot;
     if (root.isEmpty()) return false;
-    return clean == root || clean.startsWith(root + QLatin1Char('/'))
-           || root.startsWith(clean + QLatin1Char('/'));
+    // Under the scan root, or an ancestor of it (a scan of "/" means every
+    // favorite is "being scanned"; a scan of ~/Documents means ~ is too).
+    return isPathUnderRoot(clean, root) || isPathUnderRoot(root, clean);
 }
 
 PathCacheManager::~PathCacheManager()
@@ -413,7 +422,7 @@ void PathCacheManager::expandTo(const QString &rootPath)
     {
         QMutexLocker locker(&m_mutex);
         for (const QString &completedRoot : m_completedRoots) {
-            if (normalizedRoot.startsWith(completedRoot + "/") || normalizedRoot == completedRoot) {
+            if (isPathUnderRoot(normalizedRoot, completedRoot)) {
                 // Already covered by a completed scan
                 return;
             }
@@ -827,7 +836,7 @@ void PathCacheManager::scanWorker()
             QMutexLocker locker(&m_mutex);
             bool alreadyCovered = false;
             for (const QString &completedRoot : m_completedRoots) {
-                if (currentPath.startsWith(completedRoot + "/") || currentPath == completedRoot) {
+                if (isPathUnderRoot(currentPath, completedRoot)) {
                     alreadyCovered = true;
                     break;
                 }

@@ -111,6 +111,10 @@ private:
     void openPathWithApp(const QString &path);
     void announceCloudDownload(const QString &path);
     void onDownloadPollTick();
+    // After a cloud download materializes `path`, push the fresh size into
+    // any visible result rows for it — the orange "☁ 0 bytes" flips to the
+    // real size without waiting for the next search rebuild.
+    void refreshResultRowsForPath(const QString &path);
     QTimer *m_downloadPollTimer = nullptr;
     QString m_downloadPollPath;
     int m_downloadPollTicks = 0;

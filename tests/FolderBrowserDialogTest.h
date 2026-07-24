@@ -19,6 +19,9 @@ private slots:
     void testCloudFileStateDetection();
     void testFormatFileSize();
     void testOpeningCloudPlaceholderAnnouncesDownload();
+    // After the download poll sees real bytes, the result row's size roles
+    // must update (☁ 0 bytes → real size) without a search rebuild.
+    void testDownloadedFileRowShowsRealSize();
     void testHasOpenInFinderAndOpenInAppButtons();
     void testFavoritesRowStartsWithJustHomeAndPlus();
     void testFavoritePersistsAcrossInstances();
