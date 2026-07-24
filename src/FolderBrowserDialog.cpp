@@ -1536,8 +1536,13 @@ void FolderBrowserDialog::triggerContentSearch()
     QStringList paths;
     for (const SearchResult &r : m_lastFileResults) {
         if (m_contentSettings->isExtensionBlacklisted(r.path)) continue;
-        const QFileInfo info(r.path);
-        if (info.size() > sizeCapBytes) continue;
+        // One lstat covers both checks. Online-only placeholders are SKIPPED:
+        // they have no local bytes to grep — and for File-Provider dataless
+        // files, ripgrep READING them would trigger a per-file cloud download
+        // (the mass-materialization hazard from TN3150).
+        const CloudFileState cs = CloudFileState::of(r.path);
+        if (cs.locallyMissing) continue;
+        if (cs.sizeBytes > sizeCapBytes) continue;
         paths.append(r.path);
     }
     if (paths.isEmpty()) {
