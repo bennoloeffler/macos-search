@@ -69,12 +69,14 @@ constexpr int kScoreBadgeH = 16;
 constexpr int kGlyphW      = 16;
 // Fixed-width type-indicator column (folder glyph OR a ".ext" chip). Fixed so
 // the paths left-align across rows regardless of the chip's own width.
-constexpr int kTypeColW    = 52;
+// (User 24.07.: front columns tightened — 52/84/10 → 42/72/6; ~34 px more
+// room for the path, ".html" chip and "☁ 999,9 kB" still fit.)
+constexpr int kTypeColW    = 42;
 // Fixed-width size column, part of the FRONT row (rank / type / size / path).
 // Right-aligned inside the column; "☁ 999,9 kB" fits. Never drawn over the
 // path — an earlier right-edge floating pill covered long paths (user veto).
-constexpr int kSizeColW    = 84;
-constexpr int kColumnGap   = 10;
+constexpr int kSizeColW    = 72;
+constexpr int kColumnGap   = 6;
 constexpr int kLineNoW     = 60;
 constexpr int kChildIndent = 56;
 constexpr int kChildBorderInset = 8;
