@@ -1,8 +1,12 @@
 #include "FolderBrowserDialogTest.h"
 
+#include "CloudFileState.h"
 #include "ExcludeSettings.h"
 #include "FolderBrowserDialog.h"
 #include "PathCacheManager.h"
+
+#include <QLabel>
+#include <unistd.h>
 
 #include <QDir>
 #include <QListWidget>
@@ -73,6 +77,96 @@ void FolderBrowserDialogTest::testConstructsWithoutCrash()
 {
     FolderBrowserDialog dialog(QDir::homePath());
     QVERIFY(dialog.windowTitle().contains("Folder", Qt::CaseInsensitive));
+}
+
+void FolderBrowserDialogTest::testCloudFileStateDetection()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+
+    // 0-byte file — the "not physically there" placeholder shape.
+    const QString placeholder = tmp.path() + "/online-only.docx";
+    { QFile f(placeholder); QVERIFY(f.open(QIODevice::WriteOnly)); }
+    const CloudFileState empty = CloudFileState::of(placeholder);
+    QCOMPARE(empty.sizeBytes, qint64(0));
+    QVERIFY(empty.locallyMissing);
+
+    // File with real bytes on disk (fsync so APFS delayed allocation cannot
+    // leave st_blocks transiently at 0).
+    const QString local = tmp.path() + "/local.txt";
+    {
+        QFile f(local);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(4096, 'x'));
+        f.flush();
+        ::fsync(f.handle());
+    }
+    const CloudFileState real = CloudFileState::of(local);
+    QCOMPARE(real.sizeBytes, qint64(4096));
+    QVERIFY(!real.locallyMissing);
+
+    // Directories carry no size and are never "missing".
+    const CloudFileState dir = CloudFileState::of(tmp.path());
+    QCOMPARE(dir.sizeBytes, qint64(-1));
+    QVERIFY(!dir.locallyMissing);
+
+    // Vanished path: stat fails, no size, not flagged.
+    const CloudFileState gone = CloudFileState::of(tmp.path() + "/nope");
+    QCOMPARE(gone.sizeBytes, qint64(-1));
+    QVERIFY(!gone.locallyMissing);
+}
+
+void FolderBrowserDialogTest::testFormatFileSize()
+{
+    QCOMPARE(formatFileSize(-1), QString());
+    // Locale-formatted; assert shape, not the locale's decimal separator.
+    QVERIFY(!formatFileSize(0).isEmpty());
+    QVERIFY(formatFileSize(1536).contains(QStringLiteral("KB"), Qt::CaseInsensitive)
+            || formatFileSize(1536).contains(QStringLiteral("kB")));
+    QVERIFY(formatFileSize(qint64(7) * 1024 * 1024 * 1024)
+                .contains(QStringLiteral("GB"), Qt::CaseInsensitive));
+}
+
+void FolderBrowserDialogTest::testOpeningCloudPlaceholderAnnouncesDownload()
+{
+    FolderBrowserDialog::setShellOpenSuppressedForTests(true);
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString placeholder = tmp.path() + "/online-only.pdf";
+    { QFile f(placeholder); QVERIFY(f.open(QIODevice::WriteOnly)); }
+    const QString local = tmp.path() + "/here.txt";
+    {
+        QFile f(local);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(4096, 'y'));
+        f.flush();
+        ::fsync(f.handle());
+    }
+
+    FolderBrowserDialog dialog(QDir::homePath());
+    auto *results = dialog.findChild<QListWidget *>("searchResultsList");
+    auto *label = dialog.findChild<QLabel *>("resolvedPathLabel");
+    QVERIFY(results && label);
+
+    // Activating a placeholder result announces the download.
+    auto *item = new QListWidgetItem(QStringLiteral("online-only.pdf"));
+    item->setData(Qt::UserRole, placeholder);
+    results->addItem(item);
+    results->setCurrentItem(item);
+    emit results->itemActivated(item);
+    QVERIFY2(label->text().contains(QStringLiteral("Downloading")),
+             qPrintable("label was: " + label->text()));
+
+    // Activating a file with local bytes does NOT.
+    auto *item2 = new QListWidgetItem(QStringLiteral("here.txt"));
+    item2->setData(Qt::UserRole, local);
+    results->addItem(item2);
+    results->setCurrentItem(item2);   // refresh resets the label + stops poll
+    emit results->itemActivated(item2);
+    QVERIFY2(!label->text().contains(QStringLiteral("Downloading")),
+             qPrintable("label was: " + label->text()));
+
+    FolderBrowserDialog::setShellOpenSuppressedForTests(false);
 }
 
 void FolderBrowserDialogTest::testHasOpenInFinderAndOpenInAppButtons()

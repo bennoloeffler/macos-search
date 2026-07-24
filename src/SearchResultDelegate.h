@@ -45,6 +45,11 @@ public:
         SnippetHlStartRole = Qt::UserRole + 8,
         SnippetHlEndRole = Qt::UserRole + 9,
         MoreCountRole = Qt::UserRole + 10,
+        // File size (qint64, st_size) + cloud state (bool). Populated once per
+        // result row from CloudFileState::of() when the list is (re)built —
+        // paint() must NEVER stat (it runs on every hover/scroll repaint).
+        SizeRole = Qt::UserRole + 11,
+        CloudMissingRole = Qt::UserRole + 12,
     };
 
     explicit SearchResultDelegate(QObject *parent = nullptr);

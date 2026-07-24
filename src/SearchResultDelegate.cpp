@@ -1,5 +1,6 @@
 #include "SearchResultDelegate.h"
 
+#include "CloudFileState.h"
 #include "ThemeManager.h"
 
 #include <QApplication>
@@ -55,6 +56,10 @@ QColor rowBgHover()     { return isDark() ? QColor(255,255,255,10) : QColor(0,0,
 QColor childRowBg()     { return isDark() ? QColor(255,255,255,8)  : QColor(0,0,0,6); }
 QColor chipBg()         { return isDark() ? QColor(255,255,255,18) : QColor(0,0,0,12); }
 
+// Online-only / zero-byte size text — Apple systemOrange, darkened for
+// legibility on the light theme.
+QColor warnOrange()     { return isDark() ? QColor(0xFF,0x9F,0x0A) : QColor(0xE0,0x6A,0x00); }
+
 // ----- Geometry constants ---------------------------------------------------
 
 constexpr int kRowPadLeft  = 14;
@@ -65,6 +70,10 @@ constexpr int kGlyphW      = 16;
 // Fixed-width type-indicator column (folder glyph OR a ".ext" chip). Fixed so
 // the paths left-align across rows regardless of the chip's own width.
 constexpr int kTypeColW    = 52;
+// Fixed-width size column, part of the FRONT row (rank / type / size / path).
+// Right-aligned inside the column; "☁ 999,9 kB" fits. Never drawn over the
+// path — an earlier right-edge floating pill covered long paths (user veto).
+constexpr int kSizeColW    = 84;
 constexpr int kColumnGap   = 10;
 constexpr int kLineNoW     = 60;
 constexpr int kChildIndent = 56;
@@ -239,6 +248,7 @@ QSize SearchResultDelegate::sizeHint(const QStyleOptionViewItem &option,
     const QString snippet = index.data(SnippetRole).toString();
     const QString text = !snippet.isEmpty() ? snippet : path;
     int width = kRowPadLeft + kScoreBadgeW + kColumnGap + kTypeColW + kColumnGap
+                + kSizeColW + kColumnGap
                 + fm.horizontalAdvance(text) + 100 + kRowPadRight;
     if (kind == Kind::ContentLine) {
         width = kChildIndent + kLineNoW + kSnippetSidePad
@@ -397,9 +407,11 @@ void SearchResultDelegate::paint(QPainter *p,
     }
     cursorX += kScoreBadgeW + kColumnGap;
 
+    // Front-row column block after the rank badge: [type] [size] — then the
+    // path. All fixed-width so paths left-align across rows.
+    //
     // Type indicator — folder glyph for folders, a ".ext" chip for files (or
-    // the generic file glyph when a file has no extension). Sits right after
-    // the rank badge, in a fixed-width column so the paths line up. This is the
+    // the generic file glyph when a file has no extension). This is the
     // at-a-glance "what kind of thing is this" cue.
     {
         const int typeColX = cursorX;
@@ -437,6 +449,30 @@ void SearchResultDelegate::paint(QPainter *p,
     }
     cursorX += kTypeColW + kColumnGap;
 
+    // Size column (files only; folders leave it blank). Right-aligned small
+    // text. Online-only / zero-byte files ("not physically there") show in
+    // ORANGE with a cloud glyph — the "opening this will download it first"
+    // cue. The value comes from SizeRole (st_size is the full logical size
+    // even for dataless placeholders); paint never stats.
+    if (kind == Kind::File) {
+        const QVariant sizeVar = index.data(SizeRole);
+        const qint64 sizeBytes = sizeVar.isValid() ? sizeVar.toLongLong() : -1;
+        if (sizeBytes >= 0) {
+            const bool cloudMissing = index.data(CloudMissingRole).toBool();
+            QString text = formatFileSize(sizeBytes);
+            if (cloudMissing) text.prepend(QStringLiteral("☁ "));
+            QFont sizeFont = option.font;
+            sizeFont.setPointSize(qMax(8, option.font.pointSize() - 2));
+            const QFont prev = p->font();
+            p->setFont(sizeFont);
+            p->setPen(cloudMissing ? warnOrange() : tertiaryText());
+            p->drawText(QRect(cursorX, rect.top(), kSizeColW, rect.height()),
+                        Qt::AlignVCenter | Qt::AlignRight, text);
+            p->setFont(prev);
+        }
+    }
+    cursorX += kSizeColW + kColumnGap;
+
     // Path with directory/basename hierarchy and match highlighting.
     const QList<QPair<int, int>> ranges = matchRangesIn(path, query);
     const auto split = splitPath(path);
@@ -451,22 +487,18 @@ void SearchResultDelegate::paint(QPainter *p,
 
     // (The extension chip now lives up front as the type indicator.)
 
-    // Match-count badge — right-aligned, secondary chip.
+    // Match-count badge — right-aligned at the item edge, secondary chip.
+    // (The size lives in the front column block — never over the path.)
     if (matchCount > 0) {
         const QString text = (matchCount == 1)
                                 ? QObject::tr("1 match")
                                 : QObject::tr("%1 matches").arg(matchCount);
         QFont badgeFont = option.font;
-        badgeFont.setPointSize(qMax(9, option.font.pointSize() - 1));
-        badgeFont.setWeight(QFont::Medium);
-        QFontMetrics badgeFm(badgeFont);
-        const int w = badgeFm.horizontalAdvance(text) + 16;
+        badgeFont.setPointSize(qMax(8, option.font.pointSize() - 2));
+        const int w = QFontMetrics(badgeFont).horizontalAdvance(text) + 16;
         QRect badgeRect(rect.right() - kRowPadRight - w,
                         rect.center().y() - 9, w, 18);
-        const QFont prev = p->font();
-        p->setFont(badgeFont);
         drawChip(p, badgeRect, brandSoft(), brand(), text, QFont::Medium);
-        p->setFont(prev);
     }
 
     p->restore();

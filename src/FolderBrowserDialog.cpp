@@ -1,4 +1,6 @@
 #include "FolderBrowserDialog.h"
+
+#include "CloudFileState.h"
 #include "ContentSearchSettings.h"
 #include "EditorLauncher.h"
 #include "ExcludeSettings.h"
@@ -35,8 +37,10 @@
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QAbstractFileIconProvider>
 #include <QStyle>
 #include <QToolTip>
@@ -947,7 +951,7 @@ void FolderBrowserDialog::onFolderDoubleClicked(const QModelIndex &index)
         navigateTo(path);
     } else if (info.exists()) {
         m_selectedPath = path;
-        launchOpen({ path });
+        openPathWithApp(path);
     }
 }
 
@@ -980,6 +984,55 @@ void FolderBrowserDialog::launchOpen(const QStringList &args)
     QProcess::startDetached(QStringLiteral("/usr/bin/open"), args);
 }
 
+void FolderBrowserDialog::openPathWithApp(const QString &path)
+{
+    announceCloudDownload(path);
+    launchOpen({ path });
+}
+
+void FolderBrowserDialog::announceCloudDownload(const QString &path)
+{
+    // One lstat; no-op for folders and for files whose bytes are local.
+    const CloudFileState cs = CloudFileState::of(path);
+    if (!cs.locallyMissing) return;
+
+    // st_size carries the FULL logical size for File-Provider placeholders;
+    // Dropbox-classic placeholders are 0 bytes → size unknown, say so gently.
+    const QString size = (cs.sizeBytes > 0) ? formatFileSize(cs.sizeBytes)
+                                            : QString();
+    m_resolvedPathLabel->setText(size.isEmpty()
+        ? tr("⬇ Downloading from cloud — may take some seconds…")
+        : tr("⬇ Downloading %1 from cloud — may take some seconds…").arg(size));
+
+    if (!m_downloadPollTimer) {
+        m_downloadPollTimer = new QTimer(this);
+        m_downloadPollTimer->setInterval(700);
+        connect(m_downloadPollTimer, &QTimer::timeout,
+                this, &FolderBrowserDialog::onDownloadPollTick);
+    }
+    m_downloadPollPath = path;
+    m_downloadPollTicks = 0;
+    m_downloadPollTimer->start();
+}
+
+void FolderBrowserDialog::onDownloadPollTick()
+{
+    // Each tick is one lstat (µs). Materialized = real bytes on disk.
+    const CloudFileState cs = CloudFileState::of(m_downloadPollPath);
+    if (cs.sizeBytes > 0 && !cs.locallyMissing) {
+        m_downloadPollTimer->stop();
+        m_resolvedPathLabel->setText(
+            tr("✓ Downloaded %1 — opening…").arg(formatFileSize(cs.sizeBytes)));
+        QTimer::singleShot(4000, this,
+                           [this] { updateResolvedPathLabel(); });
+        return;
+    }
+    if (++m_downloadPollTicks > 180) {      // ~2 min: give up quietly
+        m_downloadPollTimer->stop();
+        updateResolvedPathLabel();
+    }
+}
+
 void FolderBrowserDialog::onOpenInFinderClicked()
 {
     // Standalone-app drift: reveal the path in Finder (parent view, item
@@ -1001,7 +1054,7 @@ void FolderBrowserDialog::onOpenInAppClicked()
         return;
     }
     m_selectedPath = path;
-    launchOpen({path});
+    openPathWithApp(path);
 }
 
 void FolderBrowserDialog::onUpClicked()
@@ -1147,6 +1200,14 @@ void FolderBrowserDialog::rebuildMergedResults()
         item->setData(Roles::QueryRole, m_lastSearchQuery);
         if (row.isFile) {
             item->setData(Roles::ExtRole, QFileInfo(row.sr.path).suffix().toLower());
+            // One lstat per visible file row (≤200 per rebuild): size + the
+            // online-only marker. Cheap, never downloads. paint() only reads
+            // these roles — no syscalls on the repaint path.
+            const CloudFileState cs = CloudFileState::of(row.sr.path);
+            if (cs.sizeBytes >= 0) {
+                item->setData(Roles::SizeRole, cs.sizeBytes);
+                item->setData(Roles::CloudMissingRole, cs.locallyMissing);
+            }
         }
 
         const auto matchesIt = m_contentMatchesByFile.find(row.sr.path);
@@ -1227,7 +1288,7 @@ void FolderBrowserDialog::onSearchResultDoubleClicked(QListWidgetItem *item)
     QString path = item->data(Qt::UserRole).toString();
     if (path.isEmpty()) return;
     m_selectedPath = path;
-    launchOpen({path});
+    openPathWithApp(path);
 }
 
 void FolderBrowserDialog::onExcludeButtonClicked()
@@ -1634,6 +1695,12 @@ QString FolderBrowserDialog::resolvedPath() const
 
 void FolderBrowserDialog::updateResolvedPathLabel()
 {
+    // Any ordinary label refresh (selection change, navigation) supersedes an
+    // in-flight download announcement — stop the poll so it can't overwrite
+    // the label later.
+    if (m_downloadPollTimer && m_downloadPollTimer->isActive()) {
+        m_downloadPollTimer->stop();
+    }
     QString path = resolvedPath();
     if (m_selectedLineNumber > 0 && !path.isEmpty()) {
         m_resolvedPathLabel->setText(

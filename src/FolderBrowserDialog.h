@@ -11,6 +11,7 @@ class QLabel;
 class QTreeView;
 class QPushButton;
 class QFileSystemModel;
+class QTimer;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
@@ -99,6 +100,20 @@ private:
     // gates every one. `args` is the argv passed to /usr/bin/open.
     void launchOpen(const QStringList &args);
     static bool s_shellOpenSuppressed;
+
+    // Open `path` with its default app. Every FILE-open goes through here:
+    // if the file is an online-only cloud placeholder (Dropbox/iCloud/
+    // OneDrive — see CloudFileState), first announce
+    // "⬇ Downloading X MB — may take some seconds…" in the resolved-path
+    // label, then let /usr/bin/open materialize it (LaunchServices reads the
+    // bytes, which triggers the provider download). A light poll flips the
+    // label to "✓ Downloaded" when the content lands.
+    void openPathWithApp(const QString &path);
+    void announceCloudDownload(const QString &path);
+    void onDownloadPollTick();
+    QTimer *m_downloadPollTimer = nullptr;
+    QString m_downloadPollPath;
+    int m_downloadPollTicks = 0;
 
     void setupUi();
     void navigateTo(const QString &path);

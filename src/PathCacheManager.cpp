@@ -698,7 +698,11 @@ static const QStringList &pathLevelExcludes()
         // must not surface as search results.
         const QString home = QDir::homePath();
         l << home + QStringLiteral("/Library")
-          << home + QStringLiteral("/.Trash");
+          << home + QStringLiteral("/.Trash")
+          // freedesktop-style trash used by the `trash` CLI and cross-platform
+          // tools — same rationale as ~/.Trash: deleted files must not surface
+          // as search results (they showed up in real queries: 9k+ items).
+          << home + QStringLiteral("/.local/share/Trash");
         return l;
     }();
     return kExcludes;

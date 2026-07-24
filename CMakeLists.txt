@@ -65,6 +65,8 @@ src/HealthMonitor.h
     src/Bench.h
     src/SearchResultDelegate.cpp
     src/SearchResultDelegate.h
+    src/CloudFileState.cpp
+    src/CloudFileState.h
     src/ScanStateIndicator.cpp
     src/ScanStateIndicator.h
     src/MaudeConfig.cpp
