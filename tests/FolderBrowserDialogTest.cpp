@@ -8,6 +8,8 @@
 
 #include <QLabel>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <QProcess>
 
 #include <QDir>
 #include <QListWidget>
@@ -115,6 +117,24 @@ void FolderBrowserDialogTest::testCloudFileStateDetection()
     const CloudFileState gone = CloudFileState::of(tmp.path() + "/nope");
     QCOMPARE(gone.sizeBytes, qint64(-1));
     QVERIFY(!gone.locallyMissing);
+
+    // decmpfs-compressed file: st_blocks == 0 but the bytes ARE local (in an
+    // xattr) — must NOT be flagged online-only. Create a real one via
+    // `ditto --hfsCompression` and only assert if compression actually took
+    // (it can no-op on some volumes).
+    const QString comp = tmp.path() + "/compressed.txt";
+    QProcess ditto;
+    ditto.start(QStringLiteral("/usr/bin/ditto"),
+                { QStringLiteral("--hfsCompression"), local, comp });
+    QVERIFY(ditto.waitForFinished(5000));
+    struct stat st;
+    if (::lstat(QFile::encodeName(comp).constData(), &st) == 0
+        && (st.st_flags & 0x20 /*UF_COMPRESSED*/) && st.st_blocks == 0) {
+        const CloudFileState c = CloudFileState::of(comp);
+        QCOMPARE(c.sizeBytes, qint64(4096));
+        QVERIFY2(!c.locallyMissing,
+                 "compressed-but-local file wrongly flagged online-only");
+    }
 }
 
 void FolderBrowserDialogTest::testFormatFileSize()
